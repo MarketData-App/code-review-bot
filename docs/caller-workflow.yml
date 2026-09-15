@@ -1,0 +1,25 @@
+name: Code review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+
+jobs:
+  review:
+    # Only run for a comment that is actually addressed to the bot.
+    if: >
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request != null &&
+       startsWith(github.event.comment.body, '@marketdata-code-review'))
+    uses: MarketData-App/code-review-bot/.github/workflows/review.yml@v1
+    secrets: inherit
+    # A private repository adds:
+    # with:
+    #   runs-on: '["self-hosted", "marketdata-docker"]'
