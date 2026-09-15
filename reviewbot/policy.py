@@ -62,6 +62,12 @@ def is_trusted(author: str, association: str, policy: dict) -> bool:
 def should_skip(pr: PRFacts, policy: dict) -> str | None:
     """A reason to write nothing at all, or None to review.
 
+    Trust is NOT decided here. It needs an API call that this module must not
+    make, and deciding it from `author_association` alone is what let the gate
+    and the run disagree inside one job: the gate asked the API and said
+    member, this said COLLABORATOR and skipped. cli.run and cli.gate now share
+    one trust function, so the two halves cannot differ.
+
     Every skip is decided before a model runs, and an ignored PR gets no
     comment and no check run (spec section 5).
     """
@@ -69,13 +75,6 @@ def should_skip(pr: PRFacts, policy: dict) -> str | None:
         return "the pull request is a draft"
     if pr.author in policy["ignore_authors"]:
         return f"the author {pr.author} is in ignore_authors"
-    if not is_trusted(pr.author, pr.author_association, policy):
-        # The workflow refuses this first, so the job never starts. This is
-        # the backstop for a caller workflow that is misconfigured.
-        return (
-            f"the author {pr.author} is not in the organisation "
-            f"(association {pr.author_association or 'NONE'})"
-        )
     if "[skip review]" in pr.title.lower():
         return "the title carries [skip review]"
     if not pr.changed_files:

@@ -252,6 +252,12 @@ jobs:
           REVIEWBOT_TRUSTED_AUTHORS: ${{ inputs.trusted-authors }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # The same organisation token the gate gets. Without it this step
+          # cannot make the membership call, falls back to author_association,
+          # and refuses every organisation member on a user-account
+          # repository -- while the gate, which has the token, has just
+          # allowed the same author. One job, two opposite answers.
+          REVIEWBOT_ORG_TOKEN: ${{ steps.org-token.outputs.token }}
         run: |
           uv run --project bot reviewbot run \
             --event "$GITHUB_EVENT_PATH" \

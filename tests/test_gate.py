@@ -528,3 +528,57 @@ def test_the_org_client_decides_a_refusal_too():
     )
     assert out["trusted"] is False
     assert out["undecided"] is False
+
+
+# --- the gate and the run must never disagree ------------------------------
+#
+# Run 35022651232 on sdk-py PR #100 contradicted itself inside one job:
+#   reviewbot gate: trusted=true - MarketDataDev02 is a member of ...
+#   reviewbot:      skipped, the author MarketDataDev02 is not in the
+#                   organisation (association COLLABORATOR)
+# Same author, seconds apart. The gate step had REVIEWBOT_ORG_TOKEN and the
+# run step did not, so one asked the API and the other fell back to
+# author_association. Both halves now use one trust function, so a
+# disagreement is not a bug to be caught but a shape that cannot occur.
+
+
+def _pull(login="MarketDataDev02", association="COLLABORATOR"):
+    return {
+        "number": 7,
+        "user": {"login": login},
+        "author_association": association,
+        "base": {"ref": "main"},
+    }
+
+
+def test_gate_and_run_agree_when_the_org_client_is_present():
+    from reviewbot import config
+
+    api = OrgGitHub(_pull(), members=["MarketDataDev02"])
+    policy = config.defaults()
+    assert (
+        cli.gate(
+            event={"pull_request": {"number": 7}},
+            repo="MarketDataApp/sdk-py",
+            token="t",
+            api=api,
+            org_api=api,
+        )["trusted"]
+        is True
+    )
+    assert cli._trust(api, policy, "MarketDataDev02", "COLLABORATOR") is not None
+
+
+def test_gate_and_run_agree_when_it_is_absent():
+    # Both fall back to author_association, and both refuse. Agreeing to
+    # refuse is a correct answer; disagreeing never is.
+    from reviewbot import config
+
+    api = FakeGitHub(_pull())  # is_org_member returns None
+    policy = config.defaults()
+    gate_out = cli.gate(
+        event={"pull_request": {"number": 7}}, repo="MarketDataApp/sdk-py", token="t", api=api
+    )
+    run_out = cli._trust(api, policy, "MarketDataDev02", "COLLABORATOR")
+    assert gate_out["trusted"] is False
+    assert run_out is None

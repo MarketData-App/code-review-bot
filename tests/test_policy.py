@@ -422,21 +422,16 @@ def test_the_repository_owner_is_reviewed(base_policy):
 
 
 def test_an_outside_contributor_is_refused(base_policy):
-    reason = policy.should_skip(make_pr(author_association="CONTRIBUTOR"), base_policy)
-    assert reason is not None
-    assert "organisation" in reason
+    assert policy.is_trusted("mallory", "CONTRIBUTOR", base_policy) is False
 
 
 def test_a_first_time_contributor_is_refused(base_policy):
-    assert (
-        policy.should_skip(make_pr(author_association="FIRST_TIME_CONTRIBUTOR"), base_policy)
-        is not None
-    )
+    assert policy.is_trusted("new", "FIRST_TIME_CONTRIBUTOR", base_policy) is False
 
 
 def test_an_unknown_association_is_refused(base_policy):
-    assert policy.should_skip(make_pr(author_association="NONE"), base_policy) is not None
-    assert policy.should_skip(make_pr(author_association=""), base_policy) is not None
+    assert policy.is_trusted("x", "NONE", base_policy) is False
+    assert policy.is_trusted("x", "", base_policy) is False
 
 
 def test_a_listed_bot_is_reviewed_despite_its_association(base_policy):
@@ -448,8 +443,7 @@ def test_a_listed_bot_is_reviewed_despite_its_association(base_policy):
 
 
 def test_an_unlisted_bot_is_refused(base_policy):
-    pr = make_pr(author="stranger-bot[bot]", author_association="NONE", author_is_bot=True)
-    assert policy.should_skip(pr, base_policy) is not None
+    assert policy.is_trusted("stranger-bot[bot]", "NONE", base_policy) is False
 
 
 def test_ignore_authors_still_wins_over_the_allow_list(base_policy):
@@ -460,8 +454,8 @@ def test_ignore_authors_still_wins_over_the_allow_list(base_policy):
 
 def test_the_trusted_associations_are_configurable(base_policy):
     base_policy["trusted_associations"] = ["OWNER"]
-    assert policy.should_skip(make_pr(author_association="MEMBER"), base_policy) is not None
-    assert policy.should_skip(make_pr(author_association="OWNER"), base_policy) is None
+    assert policy.is_trusted("a", "MEMBER", base_policy) is False
+    assert policy.is_trusted("a", "OWNER", base_policy) is True
 
 
 def test_is_trusted_is_usable_on_its_own(base_policy):
@@ -470,11 +464,9 @@ def test_is_trusted_is_usable_on_its_own(base_policy):
 
 
 def test_collaborator_is_not_an_org_member_by_default(base_policy):
-    # GitHub says COLLABORATOR for anyone invited to the repository at any
-    # permission level, read included. Such a person need not be in the
-    # organisation, and the gate grants a job on a shared runner.
+    # GitHub says COLLABORATOR for anyone invited at any permission level.
     assert base_policy["trusted_associations"] == ["OWNER", "MEMBER"]
-    assert policy.should_skip(make_pr(author_association="COLLABORATOR"), base_policy) is not None
+    assert policy.is_trusted("x", "COLLABORATOR", base_policy) is False
 
 
 def test_a_repo_may_opt_collaborators_in(base_policy):

@@ -79,16 +79,26 @@ def test_the_pull_request_is_checked_out_without_credentials():
 
 
 def test_nothing_installs_dependencies_from_the_pull_request():
-    body = (ROOT / ".github/workflows/review.yml").read_text()
+    # Scans the COMMANDS, not the file. Grepping the raw text matched the word
+    # "make" inside a comment, which is the kind of false positive that gets a
+    # safety test deleted rather than fixed.
+    commands = []
+    for item in steps():
+        for line in (item.get("run") or "").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                commands.append(line)
+    body = "\n".join(commands)
     for forbidden in [
         "npm ci",
-        "npm install\n",
         "pip install -r",
         "uv sync --project pr",
         "make ",
         "./pr/",
+        "bash pr/",
+        "python pr/",
     ]:
-        assert forbidden not in body
+        assert forbidden not in body, forbidden
 
 
 def test_the_review_runs_from_the_bot_checkout():
@@ -291,3 +301,13 @@ def test_the_caller_template_names_its_secrets_explicitly():
     assert set(secrets) == {"CODE_REVIEW_APP_PRIVATE_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
     for name, value in secrets.items():
         assert value == "${{ secrets." + name + " }}"
+
+
+def test_both_halves_get_the_same_organisation_token():
+    # sdk-py run 35022651232: the gate said "is a member of the MarketData-App
+    # organisation" and the run said "is not in the organisation", seconds
+    # apart, because only one of them had this.
+    for name in ("refuse a pull request", "run the review"):
+        assert step(name)["env"]["REVIEWBOT_ORG_TOKEN"] == (
+            "${{ steps.org-token.outputs.token }}"
+        ), name

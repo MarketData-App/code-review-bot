@@ -218,7 +218,14 @@ def _fail(api, sha: str, check_name: str, message: str) -> int:
 
 
 def run(
-    *, event: dict, repo: str, token: str, checkout: str, pr_number: int | None = None, api=None
+    *,
+    event: dict,
+    repo: str,
+    token: str,
+    checkout: str,
+    pr_number: int | None = None,
+    api=None,
+    org_api=None,
 ) -> int:
     """One whole review. Returns the process exit code."""
     number = pr_number or pr_number_from_event(event)
@@ -262,6 +269,25 @@ def run(
     from_env = policy_mod.parse_author_list(os.environ.get("REVIEWBOT_TRUSTED_AUTHORS", ""))
     if from_env:
         policy["trusted_authors"] = list(dict.fromkeys(policy["trusted_authors"] + from_env))
+
+    # The same trust function the gate uses, with the same client. Deciding it
+    # twice from different evidence is what made one job say "is a member of
+    # the MarketData-App organisation" and "is not in the organisation"
+    # seconds apart (sdk-py run 35022651232).
+    if _trust(org_api or api, policy, pr.author, pr.author_association) is None:
+        # The gate refuses this before the pull request head is fetched, so
+        # reaching it here means the caller is misconfigured -- most likely the
+        # run step is missing REVIEWBOT_ORG_TOKEN. A policy skip is silent by
+        # design; a trust failure must not look the same.
+        return _fail(
+            api,
+            pr.head_sha,
+            check_name,
+            f"{pr.author} was refused by the trust check inside `reviewbot run`, "
+            f"after the gate had already allowed the review. The two disagree only "
+            f"when they see different evidence: check that the `Run the review` "
+            f"step passes REVIEWBOT_ORG_TOKEN.",
+        )
 
     skip = policy_mod.should_skip(pr, policy)
     if skip:
@@ -435,8 +461,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if decision.get("undecided") else 0
 
     try:
+        org_token = os.environ.get("REVIEWBOT_ORG_TOKEN")
         return run(
-            event=event, repo=args.repo, token=token, checkout=args.checkout, pr_number=args.pr
+            event=event,
+            repo=args.repo,
+            token=token,
+            checkout=args.checkout,
+            pr_number=args.pr,
+            org_api=GitHub(args.repo, org_token) if org_token else None,
         )
     except Exception:  # the job must fail loudly, never silently
         traceback.print_exc()

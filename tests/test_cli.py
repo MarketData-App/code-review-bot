@@ -38,6 +38,12 @@ class FakeGitHub:
     def repository(self):
         return self.repo_settings
 
+    def is_org_member(self, org, login):
+        # The workflow gives `run` the same org client the gate uses. These
+        # fixtures predate that, so they answer "cannot tell" and exercise the
+        # author_association fallback, which is what MEMBER in make_pr means.
+        return None
+
     def gather(self, number, max_diff_kb, check_name="Code review", ignore_paths=None):
         self.gather_ignore_paths = ignore_paths
         return self.pr
@@ -486,10 +492,16 @@ def test_main_fails_without_a_token(tmp_path, monkeypatch):
 # --- the org-only gate, end to end -----------------------------------------
 
 
-def test_an_outsider_gets_no_comment_and_no_check(live_claude):
+def test_an_outsider_reaching_run_is_loud_not_silent(live_claude):
+    # The gate refuses this before the head is fetched, so reaching `run` at
+    # all means the caller is misconfigured. A policy skip is silent by
+    # design; this must not look the same, or a missing REVIEWBOT_ORG_TOKEN
+    # reads as "reviewed and skipped" with a green tick and nothing written.
     api = FakeGitHub(make_pr(author="mallory", author_association="CONTRIBUTOR"))
-    assert review(api) == 0
-    assert (api.comments, api.checks, api.labels) == ([], [], [])
+    assert review(api) == 1
+    assert api.comments == []
+    assert api.checks[0]["conclusion"] == "neutral"
+    assert "REVIEWBOT_ORG_TOKEN" in api.checks[0]["summary"]
 
 
 def test_the_trusted_author_env_var_admits_a_bot(live_claude, monkeypatch):
@@ -502,7 +514,7 @@ def test_the_trusted_author_env_var_admits_a_bot(live_claude, monkeypatch):
 def test_the_env_var_does_not_admit_an_unlisted_bot(live_claude, monkeypatch):
     monkeypatch.setenv("REVIEWBOT_TRUSTED_AUTHORS", "sdk-sync[bot]")
     api = FakeGitHub(make_pr(author="stranger[bot]", author_association="NONE"))
-    assert review(api) == 0
+    assert review(api) == 1
     assert api.comments == []
 
 
