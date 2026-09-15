@@ -1,0 +1,31 @@
+# Bot-wide defaults. A target repo overrides any subset of these in
+# .github/code-review/policy.yml on its base branch. Nested maps merge key by
+# key; lists replace whole.
+
+backends: [claude, codex]      # priority order; a missing credential drops one
+mode: first                    # first | fallback | all
+require_agreement: false       # all mode: single-backend findings do not block
+models:
+  claude: claude-opus-5
+  codex: gpt-5.6-sol
+codex_reasoning_effort: high
+gate: true                     # check = failure on blocked, else success
+require_ci_green: true         # blocked while the head commit's CI is red
+proof:
+  required: true               # runtime evidence expected for behavior changes
+  paths: []                    # empty = judge per change; else only these paths
+ratings: true                  # show the 1-6 tier row
+decision_packets: true         # allow "decision needed" escalation
+auto_approve: false            # approve via PR review when clean
+auto_approve_paths: []         # approve only if all changed files match
+auto_merge:
+  enabled: false               # default off; SDK repos may enable
+  method: squash               # squash | merge | rebase
+  authors: []                  # allow list; empty = nobody
+review_drafts: false
+ignore_paths: ["**/*.lock", "**/dist/**"]
+ignore_authors: ["dependabot[bot]", "marketdata-docs-sync[bot]"]
+check_name: "Code review"
+max_diff_kb: 400
+timeout_minutes: 15
+allow_ready_with_unseen_files: false   # the diff cap hid files; ready is refused
