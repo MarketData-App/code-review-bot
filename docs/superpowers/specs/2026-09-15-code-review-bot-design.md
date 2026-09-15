@@ -32,9 +32,18 @@ instead).
   attribution in `docs/CREDITS.md`.
 - **Python 3.12 + uv**, the org's convention for agents (`support-agent`,
   `api`). Tests with pytest.
-- **Reusable GitHub Actions workflow** (`workflow_call`) in a **public** bot
-  repo `MarketData-App/code-review-bot`, the same reason `MarketDataApp/actions`
-  is public: a workflow in a public SDK repo cannot use a private one. The
+- **Reusable GitHub Actions workflow** (`workflow_call`) in a bot repo
+  `MarketData-App/code-review-bot`, which **must end up public**, the same
+  reason `MarketDataApp/actions` is public: a workflow in another repo cannot
+  use a private one.
+
+  **It is private today**, which has a consequence worth stating plainly:
+  `uses: MarketData-App/code-review-bot/.github/workflows/review.yml@<ref>`
+  resolves under the *calling* repository's own permissions, so no other
+  repository can call the bot yet. The App installation token fixes the
+  `actions/checkout` of the bot's code, but it cannot fix `uses:` resolution.
+  Until the repo goes public, only this repository's own pull requests are
+  reviewable. The
   repo holds code, prompts and the workflow only; never secrets. Reviews and
   logs live in the target repo and inherit its visibility.
 - **A new GitHub App**, owned by the MarketData-App org, visibility "any
@@ -45,10 +54,38 @@ instead).
   write, issues write, checks write. App id and private key are org secrets
   for MarketData-App repos and repo secrets on MarketDataApp repos (a user
   account has no org secrets); callers pass `secrets: inherit`.
-- **Runners.** Public repos review on `ubuntu-latest` (free for public repos,
-  and an ephemeral VM). Private repos review on the org's self-hosted runner
-  `[self-hosted, marketdata-docker]`, because hosted minutes are capped. The
-  reusable workflow takes a `runs-on` input.
+- **Runners.** **Every** repo, public and private, reviews on the org's
+  self-hosted runner `[self-hosted, marketdata-docker]`. The reusable workflow
+  still takes a `runs-on` input, and its default is now that label.
+
+  This reverses the original decision (public repos on `ubuntu-latest`) and it
+  is only safe because of the org-only gate below. The reason for the change
+  is Codex: its ChatGPT-account credential cannot be used safely on an
+  ephemeral hosted runner (see §4), and most review volume is on the public
+  SDK repos.
+
+  Cost, accepted knowingly: one runner agent runs one job at a time, so
+  reviews queue behind each other and behind the org's other CI.
+
+- **Org members only.** The bot reviews pull requests from the organisation
+  only. A pull request from anyone else gets **no review, no comment and no
+  check run**. This is not a preference, it is the security boundary — see §6.
+  **Trust is membership of the `MarketData-App` organisation**, checked on
+  every run with `GET /orgs/{org}/members/{login}` (204 member, 404 not).
+  Deliberately not `author_association`: that describes a person's
+  relationship to one *repository*, and on the `sdk-*` repos — owned by the
+  `MarketDataApp` user account, which has no members — an org member reads as
+  COLLABORATOR and so does a stranger invited to a single repository.
+  Membership separates them; association cannot.
+
+  Two exceptions. Bot accounts go in `trusted_authors`, because a bot is never
+  an org member. And `author_association` remains the fallback for when the
+  membership lookup cannot answer, so a missing permission degrades to the
+  older behaviour rather than refusing the whole organisation.
+
+  This costs one more App permission than §2 listed above: **Organization
+  members: read**. It is read-only and narrow, and it is the only way to ask
+  the question the operator actually means.
 - **Two model backends, Claude first, Codex second**, both via their CLIs:
   `claude -p` on the subscription OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`, as
   `daily-standup` and `support-agent` do) and `codex exec` (as the website's
@@ -179,15 +216,58 @@ Reusable workflow job, in order:
 8. Stamp hidden markers: reviewed sha, revision, backends, proof state,
    decision state, finding ids.
 
-Skips decided before any model runs: drafts (per policy), all changed files
-matching `ignore_paths`, author in `ignore_authors`, `[skip review]` in the
-title, the bot's own comments. An ignored PR gets no comment and no check
+Skips decided before any model runs: **the author is outside the organisation**
+(§6, and refused earlier still by the workflow's gate step, before the PR head
+is fetched), drafts (per policy), all changed files matching `ignore_paths`,
+author in `ignore_authors`, `[skip review]` in the title, the bot's own
+comments. An ignored PR gets no comment and no check
 run.
 
 Idempotent: a rerun on the same sha rebuilds the same review and edits the
 same comment; only a one-line revision history accumulates.
 
 ## 6. Security invariants
+
+- **The org-only gate is the security boundary.** Measured on 2026-09-15,
+  on this runner image:
+  - `codex exec -s read-only` reads any file on the machine, including a
+    `chmod 600` file outside the working directory. "Read-only" means no
+    writes and no network, not confined reads.
+  - `claude -p --allowedTools Read Grep Glob --add-dir <checkout>` does the
+    same. `--add-dir` grants access; it does not restrict it.
+  - `/proc/self/environ` is readable, so a model can read its own job's
+    secrets out of its process environment.
+  - The runner container mounts no docker socket, so job-level `container:`
+    isolation is not available; bubblewrap is not in the image.
+
+  Therefore a prompt injection in a hostile diff could read the runner's
+  credentials and put them in a public comment, and **there is no second line
+  of defence today**.
+
+  A consequence to plan for: a refused pull request gets no check run at all,
+  so a repository that makes `policy.check_name` a required status check
+  leaves an outsider's pull request permanently unmergeable, with no
+  explanation on the pull request itself. That is the intended outcome — the
+  bot does not review those — but it must be a deliberate choice, not a
+  surprise. A gate that *cannot decide*, as opposed to one that refuses,
+  fails its step instead, so a transient API failure is visible rather than
+  silently skipping the review. Reviews are refused for everyone outside the
+  organisation (§2), the job does not start, and that gate is what makes the
+  rest of this section true rather than one layer among several.
+
+- The model subprocess is given an **explicit environment**: `PATH`, `HOME`,
+  `LANG`, proxy and CA settings, and the one credential that backend needs.
+  The GitHub App token and the other backend's credential are not in the
+  child's own environment.
+
+  This **raises the bar; it does not establish an invariant.** The child runs
+  under the same uid as the bot process that spawned it, and
+  `/proc/<ppid>/environ` is readable between same-uid processes, so a model
+  that goes looking can still reach the parent's environment — which does hold
+  the App token. The same paragraph above concedes it can read any file on the
+  machine anyway. `child_env` removes the casual path, and the org-only gate
+  is what actually covers this. Running the model under a separate uid would
+  close it properly, and is not done today.
 
 - `pull_request_target` is used so fork PRs on the public SDK repos get
   secrets; it is safe only because **the job never executes anything from
@@ -247,6 +327,8 @@ auto_merge:
   method: squash               # squash | merge | rebase
   authors: []                  # allow list; empty = nobody
 review_drafts: false
+trusted_associations: [OWNER, MEMBER]   # the org-only gate; see §6
+trusted_authors: []                     # extra logins, for bot accounts
 ignore_paths: ["**/*.lock", "**/dist/**"]
 ignore_authors: ["dependabot[bot]", "marketdata-docs-sync[bot]"]
 check_name: "Code review"

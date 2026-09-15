@@ -16,6 +16,7 @@ from reviewbot.result import SCHEMA_PATH
 
 class CodexBackend(Backend):
     name = "codex"
+    CREDENTIAL_ENV = ("OPENAI_API_KEY", "CODEX_HOME")
 
     def probe(self) -> bool:
         """Installed and authenticated: an API key, or a login file under CODEX_HOME."""

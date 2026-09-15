@@ -4,6 +4,7 @@ A backend turns one brief into one validated result. It knows nothing about
 GitHub, and the engine knows nothing about which model answered.
 """
 
+import os
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -51,8 +52,54 @@ class Backend:
         self.timeout = max(1.0, float(policy["timeout_minutes"]) * 60)
         self.last_cwd: str | None = None
 
+    # Environment variables every CLI needs to function at all. Anything
+    # outside this list, plus the backend's own credential, is withheld.
+    BASE_ENV = (
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "TZ",
+        "TERM",
+        "TMPDIR",
+        "USER",
+        "LOGNAME",
+        # Network reachability. A runner behind a proxy or an internal CA
+        # cannot reach the model API without these, and the failure arrives as
+        # a bare non-zero exit. None of them carries a credential.
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+    )
+
+    # The credential this backend is allowed to see. Subclasses override.
+    CREDENTIAL_ENV: tuple[str, ...] = ()
+
     def probe(self) -> bool:
         raise NotImplementedError
+
+    def child_env(self, env: dict | None = None) -> dict:
+        """The environment the model subprocess gets: its own credential, no more.
+
+        A model can read /proc/self/environ, so anything here is readable by a
+        hostile diff. The GitHub App token, the App private key and the other
+        backend's credential must never appear (spec section 6). The
+        credential this backend is using cannot be hidden from it; the
+        org-only gate is what covers that.
+        """
+        source = os.environ if env is None else env
+        out = {k: source[k] for k in self.BASE_ENV if k in source}
+        for name in self.CREDENTIAL_ENV:
+            if source.get(name):
+                out[name] = source[name]
+        return out
 
     def _run(self, text: str, schema: dict | None = None) -> dict:
         """Run the CLI once against `schema`, or the result schema by default."""
@@ -100,6 +147,7 @@ class Backend:
                     capture_output=True,
                     text=True,
                     timeout=self.timeout,
+                    env=self.child_env(),
                 )
             except subprocess.TimeoutExpired as exc:
                 raise BackendError(f"{self.name}: timed out after {self.timeout:.0f}s") from exc

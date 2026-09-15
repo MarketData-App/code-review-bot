@@ -36,7 +36,35 @@ jobs:
     secrets: inherit
 ```
 
-Private repositories add `with: { runs-on: '["self-hosted", "marketdata-docker"]' }`.
+Every repository reviews on the org's self-hosted runner, which is the
+default.
+
+**The bot reviews the organisation's own pull requests and nobody else's.** A
+pull request from anyone outside gets no review, no comment and no check run,
+and its head is never fetched onto the runner. This is the security boundary,
+not a preference: see `docs/setup.md` section 5. A repository whose own bot
+opens pull requests adds that bot's login, because a bot reads as `NONE` even
+when it is yours:
+
+```yaml
+    with:
+      trusted-authors: 'sdk-sync[bot]'
+```
+
+While this repository is private, other repositories cannot call it yet.
+`uses: <owner>/<repo>/.github/workflows/review.yml@<ref>` resolves under the
+calling repository's own permissions, and this repository's Actions access
+level is `none`.
+
+Two different fixes, for two different callers:
+
+- **Repositories inside MarketData-App** can be allowed in without making
+  anything public, by setting this repository's Actions access to
+  "Accessible from repositories in the organization".
+- **The `sdk-*` repositories cannot**, whatever that setting says: they are
+  owned by the `MarketDataApp` **user account**, and Actions access does not
+  cross from a user account to a private organisation repository. For them
+  this repository has to be public, which is what spec section 2 intends.
 
 ## Setting it up
 

@@ -1,0 +1,18 @@
+{
+  "name": "marketdata-code-review",
+  "url": "https://github.com/MarketData-App/code-review-bot",
+  "description": "Automated pull-request reviewer for the Market Data repositories. One durable review comment per PR, a verdict, a proof gate, and a re-review on every push.",
+  "public": true,
+  "hook_attributes": {
+    "active": false
+  },
+  "default_events": [],
+  "default_permissions": {
+    "contents": "write",
+    "metadata": "read",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "write",
+    "members": "read"
+  }
+}

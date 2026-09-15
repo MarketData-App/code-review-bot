@@ -223,3 +223,89 @@ def test_the_schema_handed_to_claude_omits_the_meta_schema_ref(
     assert "$schema" not in handed
     assert handed["type"] == "object"
     assert "findings" in handed["properties"]
+
+
+# --- the model subprocess's environment ------------------------------------
+#
+# A model can read /proc/self/environ (measured 2026-09-15), so whatever is in
+# its environment is readable by a hostile diff. The child gets an explicit
+# environment: its own credential and nothing else.
+
+
+def test_the_child_environment_is_explicit(policy, bin_dir, claude_env, tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_" + "T" * 36)
+    monkeypatch.setenv("CODE_REVIEW_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-be-here")
+    dump = tmp_path / "env.json"
+    script = f"""
+import json, os, sys
+sys.stdin.read()
+open({str(dump)!r}, "w").write(json.dumps(dict(os.environ)))
+print(json.dumps({{"type": "result", "is_error": False, "structured_output": {{}}}}))
+"""
+    write_script(bin_dir, "claude", script)
+    backend = base.build("claude", policy, str(tmp_path))
+    try:
+        backend.review("BRIEF")
+    except base.BackendError:
+        pass  # the empty payload fails the schema, which is fine
+    seen = json.loads(dump.read_text())
+    assert "GITHUB_TOKEN" not in seen
+    assert "CODE_REVIEW_APP_PRIVATE_KEY" not in seen
+    assert "OPENAI_API_KEY" not in seen
+    assert seen["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-token-value"
+    assert "PATH" in seen and "HOME" in seen
+
+
+def test_codex_does_not_receive_the_claude_token(policy, bin_dir, monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "claude-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-codex")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_" + "T" * 36)
+    dump = tmp_path / "codex-env.json"
+    script = f"""
+import json, os, sys
+sys.stdin.read()
+open({str(dump)!r}, "w").write(json.dumps(dict(os.environ)))
+argv = sys.argv[1:]
+open(argv[argv.index("-o") + 1], "w").write("{{}}")
+print(json.dumps({{"type": "turn.completed"}}))
+"""
+    write_script(bin_dir, "codex", script)
+    try:
+        base.build("codex", policy, str(tmp_path)).review("BRIEF")
+    except base.BackendError:
+        pass
+    seen = json.loads(dump.read_text())
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in seen
+    assert "GITHUB_TOKEN" not in seen
+    assert seen["OPENAI_API_KEY"] == "sk-codex"
+
+
+def test_the_child_environment_keeps_proxy_and_ca_settings(
+    policy, bin_dir, claude_env, tmp_path, monkeypatch
+):
+    # A runner behind a proxy or an internal CA cannot reach the API without
+    # these, and the failure surfaces as a bare non-zero exit. None of them
+    # carries a credential.
+    for name in (
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "SSL_CERT_FILE",
+        "NODE_EXTRA_CA_CERTS",
+        "https_proxy",
+        "no_proxy",
+    ):
+        monkeypatch.setenv(name, f"value-of-{name}")
+    backend = base.build("claude", policy, str(tmp_path))
+    env = backend.child_env()
+    for name in (
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "SSL_CERT_FILE",
+        "NODE_EXTRA_CA_CERTS",
+        "https_proxy",
+        "no_proxy",
+    ):
+        assert env[name] == f"value-of-{name}"

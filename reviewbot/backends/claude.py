@@ -18,6 +18,7 @@ DENIED_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"
 
 class ClaudeBackend(Backend):
     name = "claude"
+    CREDENTIAL_ENV = ("CLAUDE_CODE_OAUTH_TOKEN",)
 
     def probe(self) -> bool:
         """Installed and authenticated. A missing credential reads as not installed."""
