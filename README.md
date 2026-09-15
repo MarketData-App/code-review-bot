@@ -32,7 +32,7 @@ on:
 
 jobs:
   review:
-    uses: MarketData-App/code-review-bot/.github/workflows/review.yml@v1
+    uses: MarketData-App/code-review-bot/.github/workflows/review.yml@main
     secrets: inherit
 ```
 

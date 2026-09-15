@@ -18,8 +18,22 @@ jobs:
       github.event_name != 'issue_comment' ||
       (github.event.issue.pull_request != null &&
        startsWith(github.event.comment.body, '@marketdata-code-review'))
-    uses: MarketData-App/code-review-bot/.github/workflows/review.yml@v1
+    uses: MarketData-App/code-review-bot/.github/workflows/review.yml@main
     secrets: inherit
-    # A private repository adds:
-    # with:
+    with:
+      # REQUIRED for a public repository, and for any repository outside the
+      # MarketData-App organisation. The default is the org's self-hosted
+      # runner, and its runner group is visibility=all with
+      # allows_public_repositories=false -- "all" means all repositories in
+      # the ORGANISATION. A public repo, or a repo on the MarketDataApp user
+      # account, can never reach it. The job does not fail in that case: it
+      # queues forever with no runner and nothing says why.
+      runs-on: '["ubuntu-latest"]'
+    # A PRIVATE repository inside MarketData-App uses the self-hosted runner
+    # instead, which costs no Actions minutes and is the only place the Codex
+    # ChatGPT credential can live:
     #   runs-on: '["self-hosted", "marketdata-docker"]'
+    #
+    # A repository whose own bot opens pull requests adds that bot's login,
+    # which must be an account the organisation controls:
+    #   trusted-authors: 'sdk-sync[bot]'
