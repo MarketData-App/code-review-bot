@@ -23,6 +23,19 @@ class ClaudeBackend(Backend):
         """Installed and authenticated. A missing credential reads as not installed."""
         return bool(shutil.which("claude")) and bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
 
+    @staticmethod
+    def _cli_schema(schema: dict) -> dict:
+        """The schema as the CLI will accept it.
+
+        `claude --json-schema` validates the schema itself and cannot resolve
+        the draft 2020-12 meta-schema by URL, so it rejects the file outright:
+        "no schema with key or ref https://json-schema.org/draft/2020-12/schema".
+        Dropping the `$schema` key changes nothing about the shape it asks
+        for, and reviewbot.result still validates the answer against the file
+        with `$schema` intact.
+        """
+        return {k: v for k, v in schema.items() if k != "$schema"}
+
     def _command(self, schema: dict) -> list[str]:
         return [
             "claude",
@@ -32,7 +45,7 @@ class ClaudeBackend(Backend):
             "--output-format",
             "json",
             "--json-schema",
-            json.dumps(schema),
+            json.dumps(self._cli_schema(schema)),
             "--allowedTools",
             *READ_ONLY_TOOLS,
             "--disallowedTools",

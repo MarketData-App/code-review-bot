@@ -205,3 +205,21 @@ def test_no_live_backend_raises_no_backend_error(policy, bin_dir, monkeypatch, t
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(base.NoBackendError):
         base.run(policy, "BRIEF", str(tmp_path))
+
+
+def test_the_schema_handed_to_claude_omits_the_meta_schema_ref(
+    policy, bin_dir, claude_env, tmp_path
+):
+    # The CLI validates --json-schema itself and cannot resolve the draft
+    # 2020-12 meta-schema by URL:
+    #   "--json-schema is not a valid JSON Schema: no schema with key or ref
+    #    https://json-schema.org/draft/2020-12/schema"
+    # Our own validation still uses the file with $schema intact.
+    echo = tmp_path / "echo.json"
+    write_script(bin_dir, "claude", claude_script(VALID_JSON, echo_args=str(echo)))
+    base.build("claude", policy, str(tmp_path)).review("BRIEF")
+    argv = json.loads(echo.read_text())["argv"]
+    handed = json.loads(argv[argv.index("--json-schema") + 1])
+    assert "$schema" not in handed
+    assert handed["type"] == "object"
+    assert "findings" in handed["properties"]
