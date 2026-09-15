@@ -36,3 +36,9 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["F", "E", "W", "I"]
 ignore = ["E501"]
+
+[tool.ruff.format]
+# From ruff 0.16 onward `ruff format` also rewrites Python fences inside *.md.
+# docs/ holds the spec and the implementation plan: illustrative code that must
+# stay exactly as written. Reformatting it once broke an f-string in the plan.
+exclude = ["docs/**/*.md", "*.md", "evals/cases/*.md"]
