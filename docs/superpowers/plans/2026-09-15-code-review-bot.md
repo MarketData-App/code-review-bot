@@ -576,10 +576,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: '3.12'
 
@@ -6526,7 +6526,7 @@ jobs:
       - name: Mint the App installation token
         id: app-token
         if: steps.pr.outputs.number != ''
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.CODE_REVIEW_APP_ID }}
           private-key: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
@@ -6535,7 +6535,7 @@ jobs:
 
       - name: Check out the bot
         if: steps.pr.outputs.number != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: MarketData-App/code-review-bot
           ref: ${{ inputs.bot-ref }}
@@ -6543,7 +6543,7 @@ jobs:
 
       - name: Check out the pull request head (read only)
         if: steps.pr.outputs.number != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}
           ref: refs/pull/${{ steps.pr.outputs.number }}/head
@@ -6556,7 +6556,7 @@ jobs:
 
       - name: Install uv
         if: steps.pr.outputs.number != ''
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: '3.12'
 
