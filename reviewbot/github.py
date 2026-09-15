@@ -174,9 +174,17 @@ class GitHub:
             or {}
         ).get("check_runs", [])
         runs = [r for r in runs if r.get("name") != exclude_check_name]
-        legacy = (self._request("GET", f"/repos/{self.repo}/commits/{sha}/status").data or {}).get(
-            "state", "pending"
-        )
+        # The combined-status endpoint is the older API, and reading it needs
+        # the App's `statuses` permission, which we deliberately do not have.
+        # It is an optional signal: Actions and most modern CI report as check
+        # runs. Losing it must never fail the whole review, so an inaccessible
+        # endpoint reads as "no opinion" rather than as an error or a pass.
+        try:
+            legacy = (
+                self._request("GET", f"/repos/{self.repo}/commits/{sha}/status").data or {}
+            ).get("state", "pending")
+        except GitHubError:
+            legacy = None
 
         failed = any(
             r.get("conclusion") in ("failure", "timed_out", "action_required") for r in runs
@@ -187,6 +195,11 @@ class GitHub:
         if running:
             return "pending"
         if not runs:
+            if legacy is None:
+                # No check runs, and we cannot see the legacy API. We do not
+                # know, and require_ci_green must not be satisfied by an
+                # absence of information.
+                return "none"
             # `pending` with no check runs means nothing has reported at all.
             return "none" if legacy == "pending" else legacy
         return "pending" if legacy == "pending" else "success"

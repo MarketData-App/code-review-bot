@@ -530,3 +530,43 @@ def test_a_missing_file_reads_as_none(api, transport):
         text="Not Found",
     )
     assert api.file_at_ref(".github/code-review/policy.yml", "main") is None
+
+
+def test_ci_state_survives_no_access_to_the_legacy_status_api(api, transport):
+    # The App has `checks` but not `statuses`. The combined-status endpoint is
+    # an optional signal: most CI, Actions included, reports as check runs.
+    # The bot must never fail the whole review because it cannot read it.
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
+        data={"check_runs": [{"name": "Tests", "status": "completed", "conclusion": "success"}]},
+    )
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/status",
+        status=403,
+        text='{"message":"Resource not accessible by integration"}',
+    )
+    assert api.ci_state("abc", exclude_check_name="Code review") == "success"
+
+
+def test_a_failing_check_still_wins_without_the_legacy_api(api, transport):
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
+        data={"check_runs": [{"name": "Tests", "status": "completed", "conclusion": "failure"}]},
+    )
+    transport.add("GET", "/repos/MarketData-App/api/commits/abc/status", status=403, text="nope")
+    assert api.ci_state("abc", exclude_check_name="Code review") == "failure"
+
+
+def test_no_checks_and_no_legacy_api_is_unknown(api, transport):
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
+        data={"check_runs": []},
+    )
+    transport.add("GET", "/repos/MarketData-App/api/commits/abc/status", status=403, text="nope")
+    # Not "success": we genuinely do not know, and require_ci_green must not
+    # be satisfied by an absence of information.
+    assert api.ci_state("abc", exclude_check_name="Code review") == "none"
