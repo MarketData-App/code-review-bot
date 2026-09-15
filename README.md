@@ -53,3 +53,28 @@ uv run ruff check . && uv run ruff format --check .
 
 The default test run uses no network, no model and no GitHub token. The
 end-to-end smoke is opt-in: `uv run pytest -m e2e`.
+
+## Evaluating the review quality
+
+`evals/` holds recorded pull requests with known findings and a scorer:
+
+```bash
+GITHUB_TOKEN=... uv run python evals/record.py openclaw/wacli 422
+uv run python evals/score.py evals/cases/*.json --results run.json
+```
+
+Recording and scoring reach the network and spend tokens, so neither runs in
+the test suite. Use them when changing `reviewbot/defaults/REVIEW.md`, so the
+prompt is tuned against measurements rather than guesses.
+
+## The end-to-end smoke
+
+```bash
+REVIEWBOT_E2E_REPO=MarketData-App/review-sandbox \
+REVIEWBOT_E2E_TOKEN=ghs_... \
+CLAUDE_CODE_OAUTH_TOKEN=... \
+uv run pytest -m e2e -v
+```
+
+It opens a real pull request on a sandbox repository and closes it again. Run
+it by hand before tagging a release.

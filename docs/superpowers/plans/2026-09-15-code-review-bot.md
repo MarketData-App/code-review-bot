@@ -7054,9 +7054,10 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-`evals/cases/README.md`:
+`evals/cases/README.md` (four-backtick fence: the file itself contains fenced
+blocks):
 
-```markdown
+````markdown
 # Eval cases
 
 One JSON file per recorded pull request:
@@ -7095,7 +7096,7 @@ uv run python evals/score.py evals/cases/*.json --results run.json
 ```
 
 Recording touches the network, so it is never part of the test suite.
-```
+````
 
 - [ ] **Step 4: Write the end-to-end smoke**
 
