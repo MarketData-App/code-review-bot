@@ -37,6 +37,16 @@ instead).
   reason `MarketDataApp/actions` is public: a workflow in another repo cannot
   use a private one.
 
+  **Decision, 2026-09-15: the `sdk-*` repositories stay on the MarketDataApp
+  user account.** Moving them into the organisation would have removed the
+  secret duplication and let a private bot repo be called through Actions
+  access, but the operator declined: those are the public SDK repositories and
+  their identity is worth more than the plumbing. So this repository must
+  become public, and each SDK repository carries its own copy of the two
+  genuinely secret values — the App private key and the Claude OAuth token.
+  The App id is not one of them; an unauthenticated request returns it, so it
+  is a workflow input with a default.
+
   **It is private today**, which has a consequence worth stating plainly:
   `uses: MarketData-App/code-review-bot/.github/workflows/review.yml@<ref>`
   resolves under the *calling* repository's own permissions, so no other
@@ -66,6 +76,16 @@ instead).
 
   Cost, accepted knowingly: one runner agent runs one job at a time, so
   reviews queue behind each other and behind the org's other CI.
+
+  **A public repository cannot use that runner at all.** The org's runner
+  group is `visibility: all` with `allows_public_repositories: false`, and
+  "all" means all repositories *in the organisation*. So a public repo, or any
+  repo on the MarketDataApp user account, must pass
+  `runs-on: '["ubuntu-latest"]'` — free for a public repository anyway. A job
+  that does not is never refused: it queues forever with no runner and nothing
+  saying why. This repository's own `self-review.yml` therefore derives its
+  runner from `github.event.repository.private`, so making it public cannot
+  half-break it.
 
 - **Org members only.** The bot reviews pull requests from the organisation
   only. A pull request from anyone else gets **no review, no comment and no
