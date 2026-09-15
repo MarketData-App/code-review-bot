@@ -26,7 +26,7 @@ class CodexBackend(Backend):
         home = os.environ.get("CODEX_HOME")
         return bool(home) and Path(home, "auth.json").exists()
 
-    def _command(self, out_path: str) -> list[str]:
+    def _command(self, out_path: str, schema_path: str) -> list[str]:
         return [
             "codex",
             "exec",
@@ -40,16 +40,21 @@ class CodexBackend(Backend):
             f'model_reasoning_effort="{self.policy["codex_reasoning_effort"]}"',
             "--json",
             "--output-schema",
-            str(SCHEMA_PATH),
+            schema_path,
             "-o",
             out_path,
             "-",
         ]
 
-    def _run(self, text: str) -> dict:
+    def _run(self, text: str, schema: dict | None = None) -> dict:
         with tempfile.TemporaryDirectory(prefix="reviewbot-codex-") as work:
             out_path = str(Path(work) / "result.json")
-            proc = self._exec(self._command(out_path), text)
+            if schema is None:
+                schema_path = str(SCHEMA_PATH)
+            else:
+                schema_path = str(Path(work) / "schema.json")
+                Path(schema_path).write_text(json.dumps(schema))
+            proc = self._exec(self._command(out_path, schema_path), text)
             for line in (proc.stdout or "").splitlines():
                 try:
                     event = json.loads(line)

@@ -23,7 +23,7 @@ class ClaudeBackend(Backend):
         """Installed and authenticated. A missing credential reads as not installed."""
         return bool(shutil.which("claude")) and bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
 
-    def _command(self) -> list[str]:
+    def _command(self, schema: dict) -> list[str]:
         return [
             "claude",
             "-p",
@@ -32,7 +32,7 @@ class ClaudeBackend(Backend):
             "--output-format",
             "json",
             "--json-schema",
-            json.dumps(load_schema()),
+            json.dumps(schema),
             "--allowedTools",
             *READ_ONLY_TOOLS,
             "--disallowedTools",
@@ -42,8 +42,8 @@ class ClaudeBackend(Backend):
             self.checkout,
         ]
 
-    def _run(self, text: str) -> dict:
-        proc = self._exec(self._command(), text)
+    def _run(self, text: str, schema: dict | None = None) -> dict:
+        proc = self._exec(self._command(schema or load_schema()), text)
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:] or [""]
             raise BackendError(f"claude: exit {proc.returncode}: {tail[0][:300]}")

@@ -9,8 +9,19 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from jsonschema import Draft202012Validator
+
 from reviewbot import brief as brief_mod
 from reviewbot import result as result_mod
+
+
+def jsonschema_errors(data, schema: dict) -> list[str]:
+    """Validation errors for an arbitrary schema, in the same shape result.validate uses."""
+    validator = Draft202012Validator(schema)
+    return [
+        ("/".join(str(p) for p in e.absolute_path) or "(root)") + f": {e.message}"
+        for e in sorted(validator.iter_errors(data), key=lambda e: list(e.absolute_path))
+    ]
 
 
 class BackendError(RuntimeError):
@@ -43,9 +54,20 @@ class Backend:
     def probe(self) -> bool:
         raise NotImplementedError
 
-    def _run(self, text: str) -> dict:
-        """Run the CLI once and return the parsed answer object."""
+    def _run(self, text: str, schema: dict | None = None) -> dict:
+        """Run the CLI once against `schema`, or the result schema by default."""
         raise NotImplementedError
+
+    def ask(self, text: str, schema: dict) -> dict:
+        """One call against a schema of the caller's choosing. No retry.
+
+        The merge step in `mode: all` uses this, and nothing else does.
+        """
+        data = self._run(text, schema)
+        errors = jsonschema_errors(data, schema)
+        if errors:
+            raise BackendError(f"{self.name}: merge answer did not match: {'; '.join(errors)}")
+        return data
 
     def review(self, brief: str) -> BackendResult:
         """One review, with a single retry when the answer misses the schema."""

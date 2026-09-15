@@ -4716,14 +4716,19 @@ def _tag(result: dict, backend: str) -> list[dict]:
     return out
 
 
-def _finish(findings: list[dict], order: list[str]) -> list[dict]:
-    """Stamp id and agreed, and put the backends in policy order."""
+def _finish(findings: list[dict], order: list[str], solo: bool = False) -> list[dict]:
+    """Stamp id and agreed, and put the backends in policy order.
+
+    `solo` is a single-backend run: there is no second opinion to disagree
+    with, so every finding counts as agreed and `require_agreement` is a
+    no-op, exactly as it is for a repo that never runs `mode: all`.
+    """
     out = []
     for finding in findings:
         item = copy.deepcopy(finding)
         names = item.get("backends") or []
         item["backends"] = sorted(set(names), key=lambda n: order.index(n) if n in order else 99)
-        item["agreed"] = len(item["backends"]) > 1
+        item["agreed"] = solo or len(item["backends"]) > 1
         item["id"] = finding_id(item)
         out.append(item)
     return out
@@ -4776,7 +4781,7 @@ def merge(results: list[BackendResult], policy: dict, unlocated_merger=None) -> 
 
     if len(results) == 1:
         out = copy.deepcopy(primary.result)
-        out["findings"] = _finish(_tag(primary.result, primary.backend), order)
+        out["findings"] = _finish(_tag(primary.result, primary.backend), order, solo=True)
         return out
 
     tagged = [(r.backend, _tag(r.result, r.backend)) for r in results]
