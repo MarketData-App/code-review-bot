@@ -57,15 +57,16 @@ jobs:
     # decision is the "Refuse a pull request from outside the organisation"
     # step, which runs before anything from the pull request is fetched, and
     # which is `reviewbot gate` -- unit tested, unlike a YAML expression.
+    #
+    # `inputs['trusted-authors']`, not `inputs.trusted-authors`: an expression
+    # reads `-` as subtraction, so the dot form parses as a subtraction of two
+    # null values and the whole clause silently evaluates false. That is what
+    # skipped run 35012284457. Each clause is one line for the same reason --
+    # fewer ways for this to be quietly wrong.
     if: >
-      (github.event_name == 'pull_request_target' &&
-       (inputs.trusted-authors != '' ||
-        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
-                 github.event.pull_request.author_association))) ||
-      (github.event_name == 'issue_comment' &&
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
-                github.event.comment.author_association)) ||
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request_target' && (inputs['trusted-authors'] != '' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association))) ||
+      (github.event_name == 'issue_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     # The job's own token stays read-only. Everything the bot writes, it
     # writes with the App installation token minted below.
@@ -75,6 +76,17 @@ jobs:
       group: code-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
       cancel-in-progress: true
     steps:
+      # If this job is ever skipped unexpectedly, the `if:` above evaluated
+      # false and no step ran at all. This line is what tells you whether the
+      # expression or the payload was at fault, next time.
+      - name: Say what the gate expression saw
+        run: |
+          echo "event:       ${{ github.event_name }}"
+          echo "pr author:   ${{ github.event.pull_request.user.login }}"
+          echo "pr assoc:    ${{ github.event.pull_request.author_association }}"
+          echo "comment by:  ${{ github.event.comment.author_association }}"
+          echo "trusted-in:  '${{ inputs['trusted-authors'] }}'"
+
       - name: Work out which pull request this is
         id: pr
         env:
