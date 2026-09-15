@@ -254,3 +254,18 @@ def test_only_two_values_are_genuinely_secret():
     required = {k for k, v in secrets.items() if v.get("required")}
     assert required == {"CODE_REVIEW_APP_PRIVATE_KEY"}
     assert "CLAUDE_CODE_OAUTH_TOKEN" in secrets
+
+
+def test_the_dogfood_runner_follows_the_repository_visibility():
+    # allows_public_repositories is FALSE on the org runner group, so
+    # skynet-org can take this job only while the repo is private. Making the
+    # repo public -- required before any sdk-* repo can call this workflow --
+    # would otherwise queue the job forever with no runner and no error.
+    expr = SELF["jobs"]["review"]["with"]["runs-on"]
+    assert "github.event.repository.private" in expr
+    assert "self-hosted" in expr and "ubuntu-latest" in expr
+
+
+def test_that_expression_has_no_newlines():
+    # A folded scalar keeps the newlines of any line indented past the first.
+    assert "\n" not in SELF["jobs"]["review"]["with"]["runs-on"]

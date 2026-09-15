@@ -25,3 +25,18 @@ jobs:
       # proposing (spec section 6). It also means there is no dependency on a
       # v1 tag existing yet.
       bot-ref: main
+      # The runner follows this repository's visibility, automatically.
+      #
+      # The org's runner group is visibility=all with
+      # allows_public_repositories=FALSE, so skynet-org can take this job only
+      # while the repository is PRIVATE. Making it public -- which the sdk-*
+      # repositories require before they can call this workflow -- would
+      # otherwise leave the job queued forever with no runner and nothing
+      # saying why. Hosted minutes are free once the repository is public, and
+      # cost money while it is private, so the right runner is exactly the
+      # opposite in each case. Deciding it here means the flip is one action
+      # and cannot half-happen.
+      # One line on purpose: a folded scalar keeps the newlines of any line
+      # indented past the first, and an expression with newlines in it is how
+      # three runs were lost earlier today.
+      runs-on: ${{ github.event.repository.private && '["self-hosted", "marketdata-docker"]' || '["ubuntu-latest"]' }}
