@@ -335,8 +335,10 @@ check (and the repo's CI).
 
 1. Bot repo: package, defaults, workflow, tests. Tag `v1` once the smoke
    passes.
-2. Create the GitHub App (org-owned, any-account visibility, permissions in
-   §2), install on MarketData-App and MarketDataApp, store secrets.
+2. Create the GitHub App named `marketdata-code-review` (handle
+   `@marketdata-code-review`; org-owned, any-account visibility, permissions
+   in §2), install on MarketData-App and MarketDataApp, store secrets. App
+   creation is a human step; the bot repo documents it in `docs/setup.md`.
 3. Add the Claude OAuth token secret where the App secrets live; Codex
    credential optional.
 4. First target: `MarketData-App/code-review-bot` itself (dogfood), then one
