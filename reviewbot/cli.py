@@ -66,6 +66,7 @@ def gate(
     repo: str,
     token: str,
     api=None,
+    org_api=None,
     trusted_authors: str = "",
     pr_number: int | None = None,
 ) -> dict:
@@ -77,6 +78,16 @@ def gate(
     its own it would let an org member aim the bot at an outsider's fork and
     fetch it onto the persistent runner. This runs before that fetch, and it
     always judges the pull request's own author.
+
+    `org_api` is a second client, authenticated as the ORGANISATION's App
+    installation, and it answers the membership question. Measured on
+    2026-09-15: asking GET /orgs/MarketData-App/members/MarketDataDev02 with
+    the MarketData-App installation returns 204, and with the MarketDataApp
+    user-account installation returns 404 -- not 403. A user-account
+    installation has no `members` permission at all and GitHub answers as
+    though the person were a stranger, so the repository's own token cannot be
+    trusted with this question on a user-account repo, which is where most of
+    the review volume lives.
 
     Returns {"trusted": bool, "undecided": bool, "reason": str}. "Refused" and
     "could not decide" are different outcomes: the first is the gate working,
@@ -115,7 +126,7 @@ def gate(
     if comment:
         commenter_login = (comment.get("user") or {}).get("login", "")
         commenter_assoc = comment.get("author_association") or ""
-        if _trust(api, policy, commenter_login, commenter_assoc) is None:
+        if _trust(org_api or api, policy, commenter_login, commenter_assoc) is None:
             return refused(
                 f"the commenter {commenter_login or '(unknown)'} is not in the "
                 f"{policy['organisation']} organisation"
@@ -123,7 +134,7 @@ def gate(
 
     author = (pull.get("user") or {}).get("login", "")
     association = pull.get("author_association", "")
-    verdict = _trust(api, policy, author, association)
+    verdict = _trust(org_api or api, policy, author, association)
     if verdict is not None:
         return verdict
     return refused(
@@ -403,10 +414,12 @@ def main(argv: list[str] | None = None) -> int:
             event = json.load(handle)
 
     if args.command == "gate":
+        org_token = os.environ.get("REVIEWBOT_ORG_TOKEN")
         decision = gate(
             event=event,
             repo=args.repo,
             token=token,
+            org_api=GitHub(args.repo, org_token) if org_token else None,
             trusted_authors=os.environ.get("REVIEWBOT_TRUSTED_AUTHORS", ""),
             pr_number=args.pr,
         )

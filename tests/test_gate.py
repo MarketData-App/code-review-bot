@@ -450,3 +450,81 @@ def test_an_org_member_commenter_is_accepted():
         members=["MarketDataDev01", "MarketDataDev02"],
     )
     assert gate(api, event=event)["trusted"] is True
+
+
+# --- the organisation token ------------------------------------------------
+#
+# Measured 2026-09-15 with both installations of app 4955329, asking
+# GET /orgs/MarketData-App/members/MarketDataDev02:
+#
+#   MarketData-App (org)  installation -> 204  MEMBER
+#   MarketDataApp  (user) installation -> 404  not a member
+#
+# 404, not 403. A user-account installation has no `members` permission at
+# all, and GitHub answers as though the person were a stranger. Treating that
+# as definitive refuses every org member on every sdk-* repository, which is
+# where most review volume is. So the membership question is asked with a
+# separate, organisation-scoped token.
+
+
+class TwoTokenGitHub(FakeGitHub):
+    """Repo calls answer from one client, membership from another."""
+
+    def __init__(self, pull, members=(), policy_text=None):
+        super().__init__(pull, policy_text)
+        self.members = set(members)
+        self.asked_with = None
+
+    def is_org_member(self, org, login):
+        self.asked_with = "repo-token"
+        return False  # what a user-account installation answers: 404
+
+
+class OrgTokenGitHub:
+    def __init__(self, members, owner):
+        self.members = set(members)
+        self.owner = owner
+
+    def is_org_member(self, org, login):
+        self.owner.asked_with = "org-token"
+        return login in self.members
+
+
+def test_the_membership_question_uses_the_org_client_when_given():
+    api = TwoTokenGitHub(pull(login="MarketDataDev02", association="COLLABORATOR"))
+    org_api = OrgTokenGitHub({"MarketDataDev02"}, api)
+    out = cli.gate(
+        event={"action": "synchronize", "pull_request": {"number": 7}},
+        repo="MarketDataApp/sdk-py",
+        token="t",
+        api=api,
+        org_api=org_api,
+    )
+    assert out["trusted"] is True
+    assert api.asked_with == "org-token"
+
+
+def test_without_an_org_client_the_repo_token_is_used():
+    api = TwoTokenGitHub(pull(login="MarketDataDev02", association="COLLABORATOR"))
+    out = cli.gate(
+        event={"action": "synchronize", "pull_request": {"number": 7}},
+        repo="MarketDataApp/sdk-py",
+        token="t",
+        api=api,
+    )
+    assert out["trusted"] is False
+    assert api.asked_with == "repo-token"
+
+
+def test_the_org_client_decides_a_refusal_too():
+    api = TwoTokenGitHub(pull(login="stranger", association="COLLABORATOR"))
+    org_api = OrgTokenGitHub({"MarketDataDev02"}, api)
+    out = cli.gate(
+        event={"action": "synchronize", "pull_request": {"number": 7}},
+        repo="MarketDataApp/sdk-py",
+        token="t",
+        api=api,
+        org_api=org_api,
+    )
+    assert out["trusted"] is False
+    assert out["undecided"] is False

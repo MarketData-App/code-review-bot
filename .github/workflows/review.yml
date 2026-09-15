@@ -130,6 +130,29 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
 
+      # A SECOND token, scoped to the organisation rather than to this
+      # repository, and used for exactly one call: the membership lookup.
+      #
+      # Measured 2026-09-15, GET /orgs/MarketData-App/members/MarketDataDev02:
+      #   MarketData-App (org)  installation -> 204 MEMBER
+      #   MarketDataApp  (user) installation -> 404 not a member
+      # 404, not 403: a user-account installation has no `members` permission
+      # and GitHub answers as though the person were a stranger. Without this
+      # token, every organisation member is refused on every sdk-* repository.
+      #
+      # continue-on-error: the bot still works without it, by falling back to
+      # author_association, so a repository whose installation cannot mint it
+      # degrades instead of failing.
+      - name: Mint an organisation token for the membership check
+        id: org-token
+        if: steps.pr.outputs.number != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.CODE_REVIEW_APP_ID }}
+          private-key: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
+          owner: MarketData-App
+
       - name: Check out the bot
         if: steps.pr.outputs.number != ''
         uses: actions/checkout@v7
@@ -165,6 +188,7 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           REVIEWBOT_TRUSTED_AUTHORS: ${{ inputs.trusted-authors }}
+          REVIEWBOT_ORG_TOKEN: ${{ steps.org-token.outputs.token }}
         run: |
           uv run --project bot reviewbot gate \
             --event "$GITHUB_EVENT_PATH" \

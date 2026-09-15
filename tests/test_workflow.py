@@ -207,3 +207,25 @@ def test_the_filter_does_not_authorise_on_author_association():
     # organisation. `reviewbot gate` asks the API instead. Do not "restore"
     # an association check here.
     assert "author_association" not in REVIEW["jobs"]["review"]["if"]
+
+
+def test_an_organisation_token_is_minted_for_the_membership_check():
+    # A user-account installation answers the membership question with 404,
+    # not 403, so the repository's own token cannot be trusted with it.
+    mint = step("mint an organisation token")
+    assert mint["with"]["owner"] == "MarketData-App"
+    assert "repositories" not in mint["with"]
+    assert mint["continue-on-error"] is True
+
+
+def test_the_org_token_reaches_the_gate():
+    assert step("refuse a pull request")["env"]["REVIEWBOT_ORG_TOKEN"] == (
+        "${{ steps.org-token.outputs.token }}"
+    )
+
+
+def test_the_org_token_is_minted_before_the_gate():
+    names = [(s.get("name") or "").lower() for s in steps()]
+    assert names.index("mint an organisation token for the membership check") < names.index(
+        "refuse a pull request from outside the organisation"
+    )
