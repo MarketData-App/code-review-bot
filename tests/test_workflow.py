@@ -36,7 +36,7 @@ def test_the_workflow_is_callable():
 
 def test_the_inputs_are_declared_with_their_defaults():
     inputs = REVIEW[ON]["workflow_call"]["inputs"]
-    assert inputs["runs-on"]["default"] == '["self-hosted", "marketdata-docker"]'
+    assert inputs["runs-on"]["default"] == ""
     assert inputs["bot-ref"]["default"] == "main"
 
 
@@ -51,8 +51,8 @@ def test_the_secrets_are_declared_by_their_org_names():
     assert secrets["OPENAI_API_KEY"]["required"] is False
 
 
-def test_the_runner_comes_from_the_input():
-    assert REVIEW["jobs"]["review"]["runs-on"] == "${{ fromJSON(inputs.runs-on) }}"
+def test_the_runner_comes_from_the_input_when_one_is_given():
+    assert "inputs.runs-on" in REVIEW["jobs"]["review"]["runs-on"]
 
 
 def test_the_job_cancels_an_older_run_on_the_same_pr():
@@ -121,12 +121,6 @@ def test_the_dogfood_workflow_calls_the_reusable_one_locally():
 
 
 # --- the org-only gate -----------------------------------------------------
-
-
-def test_every_repository_reviews_on_the_self_hosted_runner():
-    assert REVIEW[ON]["workflow_call"]["inputs"]["runs-on"]["default"] == (
-        '["self-hosted", "marketdata-docker"]'
-    )
 
 
 def test_nothing_from_the_pull_request_is_fetched_before_the_gate():
@@ -269,3 +263,19 @@ def test_the_dogfood_runner_follows_the_repository_visibility():
 def test_that_expression_has_no_newlines():
     # A folded scalar keeps the newlines of any line indented past the first.
     assert "\n" not in SELF["jobs"]["review"]["with"]["runs-on"]
+
+
+def test_the_runner_is_derived_when_no_override_is_given():
+    # The prose and the template used to disagree with the input default, and
+    # a reader who believed the prose would delete the `with:` block and land
+    # in a silent infinite queue. Deriving removes the trap instead of
+    # documenting it.
+    assert REVIEW[ON]["workflow_call"]["inputs"]["runs-on"]["default"] == ""
+    expr = REVIEW["jobs"]["review"]["runs-on"]
+    assert "github.event.repository.private" in expr
+    assert "self-hosted" in expr and "ubuntu-latest" in expr
+    assert "\n" not in expr
+
+
+def test_an_explicit_runner_still_wins():
+    assert "inputs.runs-on != ''" in REVIEW["jobs"]["review"]["runs-on"]

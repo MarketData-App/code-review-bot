@@ -12,13 +12,18 @@ on:
     inputs:
       runs-on:
         description: >
-          The runner, as a JSON string. Every repository reviews on the org's
-          self-hosted runner: the Codex ChatGPT credential cannot be used
-          safely on an ephemeral hosted runner, and a model can read any file
-          on the machine it runs on (spec section 6). That is safe only
-          because of the org-only gate below.
+          OPTIONAL override, as a JSON string. Leave it unset and the runner
+          is chosen from the repository's visibility, which is the only choice
+          that cannot fail silently: the org's runner group is visibility=all
+          with allows_public_repositories=false, so a public repository -- or
+          any repository on the MarketDataApp user account -- can never reach
+          the self-hosted runner, and a job that asks for it is not refused,
+          it queues forever with no runner and nothing saying why. A private
+          repository inside MarketData-App gets the self-hosted runner, which
+          costs no Actions minutes and is the only place the Codex ChatGPT
+          credential can live. Set this only to override that.
         type: string
-        default: '["self-hosted", "marketdata-docker"]'
+        default: ''
       trusted-authors:
         description: >
           Extra logins allowed past the org-only gate, comma separated. For
@@ -91,7 +96,9 @@ jobs:
       github.event_name == 'pull_request_target' ||
       github.event_name == 'issue_comment' ||
       github.event_name == 'workflow_dispatch'
-    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    # Unset means derive it, and deriving is what stops a caller landing in the
+    # silent queue described on the input above.
+    runs-on: ${{ fromJSON(inputs.runs-on != '' && inputs.runs-on || (github.event.repository.private && '["self-hosted", "marketdata-docker"]' || '["ubuntu-latest"]')) }}
     # The job's own token stays read-only. Everything the bot writes, it
     # writes with the App installation token minted below.
     permissions:
