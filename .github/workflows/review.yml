@@ -86,9 +86,10 @@ jobs:
           echo "comment by:  ${{ github.event.comment.author_association }}"
           echo "trusted-in:  '${{ inputs['trusted-authors'] }}'"
           echo "--- what each clause evaluates to ---"
-          echo "assoc in list: ${{ contains(fromJSON('[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"]'), github.event.pull_request.author_association) }}"
+          echo "assoc in list: ${{ contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) }}"
           echo "inputs empty:  ${{ inputs['trusted-authors'] == '' }}"
           echo "is pr_target:  ${{ github.event_name == 'pull_request_target' }}"
+          echo "assoc raw:     [${{ github.event.pull_request.author_association }}]"
 
       - name: Work out which pull request this is
         id: pr
