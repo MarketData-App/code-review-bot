@@ -72,6 +72,8 @@ reviewbot/
   github.py       # ALL GitHub I/O: PR facts, diff, comments, check run, labels,
                   # auto-merge arm/disarm. The only module that holds the token.
   config.py       # policy.yml loading, layering over defaults, validation
+  facts.py        # PRFacts dataclass, the pure diff cap, path globs
+  markers.py      # hidden state markers: emit (render) and parse (github)
   brief.py        # prompt composition: engine frame + REVIEW.md + PR facts
   backends/
     base.py       # Backend protocol: probe(), review(brief) -> Result
@@ -198,6 +200,18 @@ same comment; only a one-line revision history accumulates.
   strings.
 - The brief cannot grant tools or change the sandbox; those live in the
   workflow.
+- **No agent file from the PR head is ever loaded.** A `CLAUDE.md`,
+  `AGENTS.md` or `.claude/settings.json` in the pull request is not executed,
+  but a CLI started inside the checkout would read it as instructions. Both
+  backends start in an empty temporary directory and reach the code by
+  absolute path (`--add-dir` for Claude; Codex reads `AGENTS.md` from its cwd,
+  so the empty cwd covers it). A test asserts that a hostile agent file in the
+  checkout changes neither the brief nor the tool list.
+- **PR-authored text is fenced.** The title, body, diff and comments are
+  wrapped in sentinel lines in the brief, any forged sentinel inside them is
+  defused, and the engine frame states that the fenced regions are data. Text
+  in them that asks the reviewer to change its rules is reported as a security
+  finding.
 - The App's contents-write permission is used by exactly one code path:
   arm/disarm native auto-merge. The bot never pushes to a branch.
 
@@ -234,6 +248,7 @@ ignore_authors: ["dependabot[bot]", "marketdata-docs-sync[bot]"]
 check_name: "Code review"
 max_diff_kb: 400
 timeout_minutes: 15
+allow_ready_with_unseen_files: false   # the diff cap hid files; ready is refused
 ```
 
 A malformed `policy.yml` fails the run with a clear error in the check run;
@@ -252,7 +267,9 @@ correctness, contract with docs and tests, security basics, and evidence.
 `schema/result.json` is fixed for every repo and backend:
 
 - `summary`: 2–3 sentences.
-- `findings[]`: `file`, `line_start`, `line_end` (optional), `category` ∈
+- `findings[]`: `file`, `line_start` (both nullable: a finding with both set
+  is "located" and becomes a check-run annotation; an unlocated finding has
+  neither), `line_end` (optional), `category` ∈
   {correctness, security, contract, tests, docs, style, performance},
   `severity` ∈ {blocking, should_fix, nit}, `confidence` 0–1, `title`,
   `body`, `evidence` (a file reference or quoted line).
@@ -260,7 +277,18 @@ correctness, contract with docs and tests, security basics, and evidence.
   `ask` (plain-language request when not sufficient).
 - `verdict`: `ready` | `needs_changes` | `blocked`, plus `reason`.
 - `rating`: `patch`, `proof` tiers 1–6; `overall` = weaker, computed by the
-  engine, never by the model.
+  engine, never by the model. The tier meanings are schema semantics, so they
+  live in the engine frame that `brief.py` always emits, never in
+  `defaults/REVIEW.md`: a repo file replaces the default in full (§7), so a
+  repo with its own `REVIEW.md` would otherwise rate against nothing.
+
+  `patch`: 1 harmful, 2 wrong, 3 incomplete, 4 works with reservations,
+  5 solid, 6 exemplary.
+
+  `proof`: 1 none, 2 claimed, 3 partial, 4 adequate, 5 reproducible,
+  6 comprehensive.
+
+  `render.py` uses the same words in the rating row.
 - `decision` (optional): `question`, `options[]`, `recommendation`.
 - `praise[]`: short positives.
 
@@ -295,9 +323,15 @@ re-review reports resolved / open / new.
 merge endpoint. It arms GitHub's native auto-merge when all of: verdict
 ready; proof sufficient or waived; no open decision; CI green on head; the
 author is on `auto_merge.authors`. When any condition later fails it disarms
-and says so. Prerequisites the bot checks and reports if missing: "Allow
-auto-merge" enabled in repo settings, a branch rule requiring the review
-check (and the repo's CI).
+and says so. Prerequisites the bot reports: "Allow auto-merge" enabled in
+repo settings, and a branch rule requiring the review check (and the repo's
+CI). Reading a branch rule needs an Administration read permission the App
+does not have (§2) and will not be given, so the bot arms and reports
+GitHub's own error text when arming is refused. `GET /repos/{owner}/{repo}`
+carries `allow_auto_merge`; when the installation token returns that field
+the bot uses it for a clearer message before arming, and falls through to the
+arming error when the field is absent. `docs/setup.md` lists both
+prerequisites for the operator.
 
 ## 9. Error handling
 
