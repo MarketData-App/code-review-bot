@@ -163,6 +163,24 @@ class GitHub:
             return None
         return base64.b64decode(data["content"]).decode("utf-8")
 
+    def is_org_member(self, org: str, login: str) -> bool | None:
+        """Is `login` a member of `org`? None when we cannot tell.
+
+        204 means yes, 404 means no. A 403 means the App has not been granted
+        Organization members:read, and a 5xx means GitHub is unwell; neither
+        is evidence of non-membership, so both answer None and let the caller
+        fall back rather than refuse the whole organisation.
+        """
+        if not login or not org:
+            return False
+        try:
+            reply = self._request(
+                "GET", f"/orgs/{urllib.parse.quote(org)}/members/{urllib.parse.quote(login)}"
+            )
+        except GitHubError as exc:
+            return False if " 404" in str(exc) else None
+        return reply.status < 400
+
     def repository(self) -> dict:
         """The repository object. Read for `allow_auto_merge` before arming."""
         return self._request("GET", f"/repos/{self.repo}").data or {}
@@ -330,6 +348,7 @@ class GitHub:
             head_sha=(pull.get("head") or {}).get("sha", ""),
             base_ref=(pull.get("base") or {}).get("ref", ""),
             node_id=pull.get("node_id", ""),
+            author_association=pull.get("author_association", ""),
             changed_files=files,
             diff=diff,
             unseen_files=unseen,

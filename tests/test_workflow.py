@@ -36,8 +36,8 @@ def test_the_workflow_is_callable():
 
 def test_the_inputs_are_declared_with_their_defaults():
     inputs = REVIEW[ON]["workflow_call"]["inputs"]
-    assert inputs["runs-on"]["default"] == '"ubuntu-latest"'
-    assert inputs["bot-ref"]["default"] == "v1"
+    assert inputs["runs-on"]["default"] == '["self-hosted", "marketdata-docker"]'
+    assert inputs["bot-ref"]["default"] == "main"
 
 
 def test_the_secrets_are_declared_by_their_org_names():
@@ -118,3 +118,89 @@ def test_the_caller_example_triggers_on_the_five_actions():
 
 def test_the_dogfood_workflow_calls_the_reusable_one_locally():
     assert SELF["jobs"]["review"]["uses"] == "./.github/workflows/review.yml"
+
+
+# --- the org-only gate -----------------------------------------------------
+
+
+def test_every_repository_reviews_on_the_self_hosted_runner():
+    assert REVIEW[ON]["workflow_call"]["inputs"]["runs-on"]["default"] == (
+        '["self-hosted", "marketdata-docker"]'
+    )
+
+
+def test_nothing_from_the_pull_request_is_fetched_before_the_gate():
+    # The decision itself lives in `reviewbot gate` and is tested in
+    # tests/test_gate.py. What matters here is the order: a model on this
+    # runner can read any file on the machine, so the pull request's head must
+    # not be fetched until the gate has passed.
+    names = [(s.get("name") or "") for s in steps()]
+    gate_at = names.index("Refuse a pull request from outside the organisation")
+    head_at = names.index("Check out the pull request head (read only)")
+    assert gate_at < head_at
+
+
+def test_every_step_after_the_gate_is_conditional_on_it():
+    names = [(s.get("name") or "") for s in steps()]
+    gate_at = names.index("Refuse a pull request from outside the organisation")
+    for item in steps()[gate_at + 1 :]:
+        assert item.get("if") == "steps.gate.outputs.trusted == 'true'", item.get("name")
+
+
+def test_the_gate_step_runs_the_tested_command():
+    gate = step("refuse a pull request")
+    assert "reviewbot gate" in gate["run"]
+    assert gate["id"] == "gate"
+    assert gate["env"]["REVIEWBOT_TRUSTED_AUTHORS"] == "${{ inputs.trusted-authors }}"
+
+
+def test_the_if_expression_is_only_a_first_filter():
+    # It cannot see the pull request author on issue_comment or dispatch, so
+    # it must not be the only thing standing between a fork and the runner.
+    gate = REVIEW["jobs"]["review"]["if"]
+    assert "pull_request_target" in gate
+
+
+def test_the_bot_ref_default_is_a_ref_that_exists():
+    assert REVIEW[ON]["workflow_call"]["inputs"]["bot-ref"]["default"] == "main"
+
+
+def test_there_is_a_trusted_authors_input_for_bot_accounts():
+    inputs = REVIEW[ON]["workflow_call"]["inputs"]
+    assert inputs["trusted-authors"]["default"] == ""
+
+
+def test_the_trusted_author_list_reaches_the_bot():
+    env = step("run the review")["env"]
+    assert env["REVIEWBOT_TRUSTED_AUTHORS"] == "${{ inputs.trusted-authors }}"
+
+
+def test_the_bot_checkout_uses_the_app_token():
+    # The bot repository is private; a caller's own GITHUB_TOKEN cannot read it.
+    checkout = step("check out the bot")
+    assert checkout["with"]["token"] == "${{ steps.app-token.outputs.token }}"
+    assert checkout["with"]["persist-credentials"] is False
+
+
+def test_the_app_token_is_minted_before_the_bot_checkout():
+    names = [(s.get("name") or "").lower() for s in steps()]
+    assert names.index("mint the app installation token") < names.index("check out the bot")
+
+
+def test_the_dogfood_workflow_runs_the_bot_from_the_default_branch():
+    # Never from the pull request's own head, and no dependency on a v1 tag.
+    assert SELF["jobs"]["review"]["with"]["bot-ref"] == "main"
+
+
+def test_the_first_filter_refuses_an_outsiders_comment():
+    # Otherwise a stranger's comment starts a job on the shared self-hosted
+    # runner, even though `reviewbot gate` then stops it before any fetch.
+    gate = REVIEW["jobs"]["review"]["if"]
+    assert "github.event.comment.author_association" in gate
+    assert "issue_comment" in gate
+
+
+def test_the_first_filter_is_wider_than_the_gate_on_purpose():
+    # It includes COLLABORATOR so a repo that opts them in still starts a job;
+    # `reviewbot gate` makes the real decision from the repository's policy.
+    assert "COLLABORATOR" in REVIEW["jobs"]["review"]["if"]

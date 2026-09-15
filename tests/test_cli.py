@@ -85,6 +85,7 @@ def make_pr(**over):
         head_sha="a" * 40,
         base_ref="main",
         node_id="PR_node",
+        author_association="MEMBER",
         changed_files=[
             {"path": "sdk/client.py", "status": "modified", "additions": 3, "deletions": 1}
         ],
@@ -479,3 +480,36 @@ def test_main_fails_without_a_token(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_REPOSITORY", "MarketData-App/api")
     with pytest.raises(SystemExit):
         cli.main(["run", "--event", str(event), "--checkout", "/w/pr"])
+
+
+# --- the org-only gate, end to end -----------------------------------------
+
+
+def test_an_outsider_gets_no_comment_and_no_check(live_claude):
+    api = FakeGitHub(make_pr(author="mallory", author_association="CONTRIBUTOR"))
+    assert review(api) == 0
+    assert (api.comments, api.checks, api.labels) == ([], [], [])
+
+
+def test_the_trusted_author_env_var_admits_a_bot(live_claude, monkeypatch):
+    monkeypatch.setenv("REVIEWBOT_TRUSTED_AUTHORS", "sdk-sync[bot], other[bot]")
+    api = FakeGitHub(make_pr(author="sdk-sync[bot]", author_association="NONE"))
+    assert review(api) == 0
+    assert len(api.comments) == 1
+
+
+def test_the_env_var_does_not_admit_an_unlisted_bot(live_claude, monkeypatch):
+    monkeypatch.setenv("REVIEWBOT_TRUSTED_AUTHORS", "sdk-sync[bot]")
+    api = FakeGitHub(make_pr(author="stranger[bot]", author_association="NONE"))
+    assert review(api) == 0
+    assert api.comments == []
+
+
+def test_policy_trusted_authors_and_the_env_var_combine(live_claude, monkeypatch):
+    monkeypatch.setenv("REVIEWBOT_TRUSTED_AUTHORS", "from-env[bot]")
+    api = FakeGitHub(
+        make_pr(author="from-policy[bot]", author_association="NONE"),
+        files={".github/code-review/policy.yml": "trusted_authors: ['from-policy[bot]']\n"},
+    )
+    assert review(api) == 0
+    assert len(api.comments) == 1

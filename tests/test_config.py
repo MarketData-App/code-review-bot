@@ -111,3 +111,30 @@ def test_positive_number_keys_are_checked():
     with pytest.raises(config.PolicyError) as excinfo:
         config.load("max_diff_kb: 0\n")
     assert "max_diff_kb" in str(excinfo.value)
+
+
+# --- the gate's width is not a free parameter ------------------------------
+
+
+def test_a_repo_cannot_widen_the_gate_to_everyone():
+    # trusted_associations is the security boundary. A caller repo may narrow
+    # it or add COLLABORATOR, but it must not be able to admit the world.
+    for bad in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN"):
+        with pytest.raises(config.PolicyError) as excinfo:
+            config.load(f"trusted_associations: [OWNER, {bad}]\n")
+        assert bad in str(excinfo.value)
+
+
+def test_collaborator_may_be_opted_in():
+    policy = config.load("trusted_associations: [OWNER, MEMBER, COLLABORATOR]\n")
+    assert policy["trusted_associations"] == ["OWNER", "MEMBER", "COLLABORATOR"]
+
+
+def test_an_unknown_association_is_rejected():
+    with pytest.raises(config.PolicyError):
+        config.load("trusted_associations: [OWNER, ADMIRAL]\n")
+
+
+def test_the_association_list_may_not_be_empty():
+    with pytest.raises(config.PolicyError):
+        config.load("trusted_associations: []\n")

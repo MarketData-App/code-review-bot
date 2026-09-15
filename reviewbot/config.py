@@ -17,6 +17,14 @@ MODES = ("first", "fallback", "all")
 MERGE_METHODS = ("squash", "merge", "rebase")
 EFFORTS = ("low", "medium", "high")
 
+# The only associations a repository may declare trusted. NONE, CONTRIBUTOR
+# and FIRST_TIME_CONTRIBUTOR are absent on purpose: they are what an outsider
+# has, and the gate is an organisation-wide security boundary (spec section 6),
+# not a per-repository preference. A repo may narrow the list or add
+# COLLABORATOR; it may not admit the world. A named bot still goes in
+# trusted_authors, which is an explicit list of accounts the org controls.
+ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
+
 # key -> expected type. Nested maps are described by their own table below.
 _TOP_TYPES = {
     "backends": list,
@@ -33,6 +41,9 @@ _TOP_TYPES = {
     "auto_approve_paths": list,
     "auto_merge": dict,
     "review_drafts": bool,
+    "organisation": str,
+    "trusted_associations": list,
+    "trusted_authors": list,
     "ignore_paths": list,
     "ignore_authors": list,
     "check_name": str,
@@ -116,6 +127,16 @@ def _validate(policy: dict) -> None:
         for key, expected in table.items():
             _check_type(f"{parent}.{key}", policy[parent][key], expected)
 
+    if not policy["trusted_associations"]:
+        raise PolicyError("trusted_associations must name at least one association")
+    for name in policy["trusted_associations"]:
+        if name not in ASSOCIATIONS:
+            raise PolicyError(
+                f"trusted_associations may not include {name}; "
+                f"choose from {', '.join(ASSOCIATIONS)}. An individual account "
+                f"goes in trusted_authors instead."
+            )
+
     if not policy["backends"]:
         raise PolicyError("backends must name at least one backend")
     for name in policy["backends"]:
@@ -136,7 +157,13 @@ def _validate(policy: dict) -> None:
     for key in ("max_diff_kb", "timeout_minutes"):
         if policy[key] < 1:
             raise PolicyError(f"{key} must be 1 or more")
-    for key in ("ignore_paths", "ignore_authors", "auto_approve_paths"):
+    for key in (
+        "ignore_paths",
+        "ignore_authors",
+        "auto_approve_paths",
+        "trusted_associations",
+        "trusted_authors",
+    ):
         for item in policy[key]:
             if not isinstance(item, str):
                 raise PolicyError(f"{key} must hold strings only")

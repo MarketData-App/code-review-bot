@@ -37,6 +37,28 @@ class Decisions:
     reasons: list[str] = field(default_factory=list)
 
 
+def parse_author_list(raw: str | None) -> list[str]:
+    """Split a comma-separated author list, tolerating spaces and empties.
+
+    The workflow and the engine must agree on what a list means, so there is
+    one parser and both use it.
+    """
+    return [name.strip() for name in (raw or "").split(",") if name.strip()]
+
+
+def is_trusted(author: str, association: str, policy: dict) -> bool:
+    """True when this author may have their pull request reviewed at all.
+
+    The bot reviews the organisation's own pull requests and nobody else's.
+    A model on the self-hosted runner can read any file on that machine
+    (spec section 6), so this is the security boundary, not a preference.
+    """
+    listed = {name.strip().lower() for name in (policy["trusted_authors"] or [])}
+    if (author or "").strip().lower() in listed:
+        return True
+    return (association or "").upper() in (policy["trusted_associations"] or [])
+
+
 def should_skip(pr: PRFacts, policy: dict) -> str | None:
     """A reason to write nothing at all, or None to review.
 
@@ -47,6 +69,13 @@ def should_skip(pr: PRFacts, policy: dict) -> str | None:
         return "the pull request is a draft"
     if pr.author in policy["ignore_authors"]:
         return f"the author {pr.author} is in ignore_authors"
+    if not is_trusted(pr.author, pr.author_association, policy):
+        # The workflow refuses this first, so the job never starts. This is
+        # the backstop for a caller workflow that is misconfigured.
+        return (
+            f"the author {pr.author} is not in the organisation "
+            f"(association {pr.author_association or 'NONE'})"
+        )
     if "[skip review]" in pr.title.lower():
         return "the title carries [skip review]"
     if not pr.changed_files:
@@ -70,6 +99,26 @@ def wants_rereview(body: str, handle: str = HANDLE) -> bool:
     """True when a PR comment asks the bot for another pass."""
     text = " ".join((body or "").split()).lower()
     return text.startswith(handle.lower()) and "re-review" in text
+
+
+# The commands spec section 8 defines. A comment addressed to the bot that
+# carries neither is conversation, not an instruction, and must not start a
+# job on the runner.
+COMMANDS = ("re-review", "waive")
+
+
+def is_bot_command(body: str, handle: str = HANDLE) -> bool:
+    """True when a comment addresses the bot AND carries a defined command.
+
+    `re-review` is not the only one: `waive` must start a run too, or the
+    waiver only takes effect on the author's next push. Anything else
+    addressed to the bot is ignored, so saying thank you costs nothing.
+    """
+    text = " ".join((body or "").split()).lower()
+    if not text.startswith(handle.lower()):
+        return False
+    rest = text[len(handle) :].strip()
+    return any(rest.startswith(command) for command in COMMANDS)
 
 
 def collect_waivers(comments: list[dict], previous: dict, handle: str = HANDLE) -> dict:

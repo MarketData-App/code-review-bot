@@ -25,6 +25,9 @@ class PRFacts:
     head_sha: str
     base_ref: str
     node_id: str
+    # GitHub's own word for the author's relationship to the repository. The
+    # org-only gate reads it; it is set by GitHub, not by the pull request.
+    author_association: str
     changed_files: list[dict]
     diff: str
     unseen_files: list[str]

@@ -34,6 +34,7 @@ def make_pr(**over):
         head_sha="a" * 40,
         base_ref="main",
         node_id="PR_1",
+        author_association="MEMBER",
         changed_files=[
             {"path": "sdk/client.py", "status": "modified", "additions": 3, "deletions": 1}
         ],

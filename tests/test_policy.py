@@ -24,6 +24,7 @@ def make_pr(**over):
         head_sha="a" * 40,
         base_ref="main",
         node_id="PR_1",
+        author_association="MEMBER",
         changed_files=[
             {"path": "sdk/client.py", "status": "modified", "additions": 3, "deletions": 1}
         ],
@@ -401,3 +402,104 @@ def test_several_waivers_in_one_comment():
         }
     ]
     assert set(policy.collect_waivers(comments, {})) == {"1234abcd", "5678efab"}
+
+
+# --- the org-only gate -----------------------------------------------------
+#
+# The bot reviews pull requests from the organisation only. This is the
+# security boundary, not a preference: a model on the self-hosted runner can
+# read any file on the machine (spec section 6), so an outsider's pull request
+# must never reach it. The workflow refuses first; this is the backstop for a
+# caller workflow that is misconfigured.
+
+
+def test_an_org_member_is_reviewed(base_policy):
+    assert policy.should_skip(make_pr(author_association="MEMBER"), base_policy) is None
+
+
+def test_the_repository_owner_is_reviewed(base_policy):
+    assert policy.should_skip(make_pr(author_association="OWNER"), base_policy) is None
+
+
+def test_an_outside_contributor_is_refused(base_policy):
+    reason = policy.should_skip(make_pr(author_association="CONTRIBUTOR"), base_policy)
+    assert reason is not None
+    assert "organisation" in reason
+
+
+def test_a_first_time_contributor_is_refused(base_policy):
+    assert (
+        policy.should_skip(make_pr(author_association="FIRST_TIME_CONTRIBUTOR"), base_policy)
+        is not None
+    )
+
+
+def test_an_unknown_association_is_refused(base_policy):
+    assert policy.should_skip(make_pr(author_association="NONE"), base_policy) is not None
+    assert policy.should_skip(make_pr(author_association=""), base_policy) is not None
+
+
+def test_a_listed_bot_is_reviewed_despite_its_association(base_policy):
+    # A bot opening a pull request has association NONE or CONTRIBUTOR even
+    # when the bot is ours, so agent pull requests need the explicit list.
+    base_policy["trusted_authors"] = ["sdk-bot[bot]"]
+    pr = make_pr(author="sdk-bot[bot]", author_association="NONE", author_is_bot=True)
+    assert policy.should_skip(pr, base_policy) is None
+
+
+def test_an_unlisted_bot_is_refused(base_policy):
+    pr = make_pr(author="stranger-bot[bot]", author_association="NONE", author_is_bot=True)
+    assert policy.should_skip(pr, base_policy) is not None
+
+
+def test_ignore_authors_still_wins_over_the_allow_list(base_policy):
+    base_policy["trusted_authors"] = ["dependabot[bot]"]
+    pr = make_pr(author="dependabot[bot]", author_association="NONE")
+    assert "ignore_authors" in policy.should_skip(pr, base_policy)
+
+
+def test_the_trusted_associations_are_configurable(base_policy):
+    base_policy["trusted_associations"] = ["OWNER"]
+    assert policy.should_skip(make_pr(author_association="MEMBER"), base_policy) is not None
+    assert policy.should_skip(make_pr(author_association="OWNER"), base_policy) is None
+
+
+def test_is_trusted_is_usable_on_its_own(base_policy):
+    assert policy.is_trusted("alice", "MEMBER", base_policy) is True
+    assert policy.is_trusted("mallory", "CONTRIBUTOR", base_policy) is False
+
+
+def test_collaborator_is_not_an_org_member_by_default(base_policy):
+    # GitHub says COLLABORATOR for anyone invited to the repository at any
+    # permission level, read included. Such a person need not be in the
+    # organisation, and the gate grants a job on a shared runner.
+    assert base_policy["trusted_associations"] == ["OWNER", "MEMBER"]
+    assert policy.should_skip(make_pr(author_association="COLLABORATOR"), base_policy) is not None
+
+
+def test_a_repo_may_opt_collaborators_in(base_policy):
+    base_policy["trusted_associations"] = ["OWNER", "MEMBER", "COLLABORATOR"]
+    assert policy.should_skip(make_pr(author_association="COLLABORATOR"), base_policy) is None
+
+
+def test_trusted_authors_tolerates_spaces_and_case(base_policy):
+    base_policy["trusted_authors"] = ["sdk-sync[bot]"]
+    assert policy.is_trusted("SDK-Sync[bot]", "NONE", base_policy) is True
+
+
+def test_parse_author_list_strips_and_drops_empties():
+    assert policy.parse_author_list("a[bot], b[bot] ,, c") == ["a[bot]", "b[bot]", "c"]
+    assert policy.parse_author_list("") == []
+    assert policy.parse_author_list(None) == []
+
+
+def test_only_the_documented_commands_are_bot_commands():
+    # Spec section 8 defines two: re-review and waive. Treating every comment
+    # addressed to the bot as a trigger widened the contract silently.
+    assert policy.is_bot_command(f"{policy.HANDLE} re-review")
+    assert policy.is_bot_command(f"{policy.HANDLE} waive 1234abcd")
+    assert policy.is_bot_command(f"  {policy.HANDLE}   WAIVE 1234abcd  ")
+    assert not policy.is_bot_command(f"{policy.HANDLE} thanks, nice review")
+    assert not policy.is_bot_command(f"{policy.HANDLE}")
+    assert not policy.is_bot_command("re-review please")
+    assert not policy.is_bot_command("")

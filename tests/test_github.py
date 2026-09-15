@@ -352,6 +352,7 @@ def stock_pr_routes(transport, comments):
             "head": {"sha": "abc"},
             "base": {"ref": "main"},
             "node_id": "PR_node",
+            "author_association": "MEMBER",
         },
     )
     transport.add(
@@ -570,3 +571,45 @@ def test_no_checks_and_no_legacy_api_is_unknown(api, transport):
     # Not "success": we genuinely do not know, and require_ci_green must not
     # be satisfied by an absence of information.
     assert api.ci_state("abc", exclude_check_name="Code review") == "none"
+
+
+def test_gather_carries_the_author_association(api, transport):
+    # The org-only gate reads this. GitHub sets it; the pull request cannot.
+    stock_pr_routes(transport, [])
+    assert api.gather(7, max_diff_kb=400).author_association == "MEMBER"
+
+
+# --- organisation membership -----------------------------------------------
+
+
+def test_an_org_member_reads_as_true(api, transport):
+    transport.add("GET", "/orgs/MarketData-App/members/MarketDataDev01", status=204)
+    assert api.is_org_member("MarketData-App", "MarketDataDev01") is True
+
+
+def test_a_non_member_reads_as_false(api, transport):
+    transport.add("GET", "/orgs/MarketData-App/members/stranger", status=404, text="Not Found")
+    assert api.is_org_member("MarketData-App", "stranger") is False
+
+
+def test_no_permission_reads_as_unknown(api, transport):
+    # Until the App is granted Organization members:read, this 403s. That is
+    # "cannot tell", not "not a member": the caller falls back rather than
+    # refusing everyone in the organisation.
+    transport.add(
+        "GET",
+        "/orgs/MarketData-App/members/MarketDataDev01",
+        status=403,
+        text='{"message":"Resource not accessible by integration"}',
+    )
+    assert api.is_org_member("MarketData-App", "MarketDataDev01") is None
+
+
+def test_a_server_error_reads_as_unknown(api, transport):
+    for _ in range(6):
+        transport.add("GET", "/orgs/MarketData-App/members/x", status=500, text="oops")
+    assert api.is_org_member("MarketData-App", "x") is None
+
+
+def test_an_empty_login_is_not_a_member(api, transport):
+    assert api.is_org_member("MarketData-App", "") is False

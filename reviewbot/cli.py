@@ -39,12 +39,137 @@ def pr_number_from_event(event: dict) -> int | None:
     issue = event.get("issue") or {}
     if issue.get("pull_request"):
         body = (event.get("comment") or {}).get("body", "")
-        if policy_mod.wants_rereview(body):
+        # Any command addressed to the bot, not only `re-review`: `waive`
+        # must start a run too, or the waiver waits for the author's next push.
+        if policy_mod.is_bot_command(body):
             return int(issue["number"])
         return None
     inputs = event.get("inputs") or {}
     if inputs.get("pr"):
         return int(inputs["pr"])
+    return None
+
+
+def refused(reason: str) -> dict:
+    """A decided refusal: this pull request may not be reviewed."""
+    return {"trusted": False, "undecided": False, "reason": reason}
+
+
+def undecided(reason: str) -> dict:
+    """We could not decide. The step fails, so the silence is visible."""
+    return {"trusted": False, "undecided": True, "reason": reason}
+
+
+def gate(
+    *,
+    event: dict,
+    repo: str,
+    token: str,
+    api=None,
+    trusted_authors: str = "",
+    pr_number: int | None = None,
+) -> dict:
+    """Decide whether this pull request may be reviewed, before any checkout.
+
+    The review job's `if:` expression is a cheap first filter. It cannot see
+    the pull request's author on an `issue_comment` or a `workflow_dispatch`
+    event -- those payloads carry the commenter, or nothing at all -- so on
+    its own it would let an org member aim the bot at an outsider's fork and
+    fetch it onto the persistent runner. This runs before that fetch, and it
+    always judges the pull request's own author.
+
+    Returns {"trusted": bool, "undecided": bool, "reason": str}. "Refused" and
+    "could not decide" are different outcomes: the first is the gate working,
+    the second must fail the step rather than skip the review in silence.
+    """
+    number = pr_number or pr_number_from_event(event)
+    if number is None:
+        return refused("the event names no pull request to review")
+
+    api = api or GitHub(repo, token)
+
+    try:
+        pull = api.pull_request(number)
+    except GitHubError as exc:
+        return undecided(f"could not read the pull request: {exc}")
+
+    base_ref = (pull.get("base") or {}).get("ref") or "HEAD"
+    try:
+        policy = config.load(api.file_at_ref(POLICY_PATH, base_ref))
+    except config.PolicyError:
+        # A malformed policy must not widen the gate. The run itself reports
+        # the error; here we simply fall back to the defaults.
+        policy = config.defaults()
+    except GitHubError as exc:
+        return undecided(f"could not read {POLICY_PATH}: {exc}")
+
+    policy["trusted_authors"] = list(
+        dict.fromkeys(policy["trusted_authors"] + policy_mod.parse_author_list(trusted_authors))
+    )
+
+    # An issue_comment must satisfy both: the commenter asks for the work, and
+    # the pull request's author decides whether it may happen at all. The
+    # commenter is judged against the repository's own policy, not the
+    # defaults, so a repo that widens the list widens it for both.
+    comment = event.get("comment") or {}
+    if comment:
+        commenter_login = (comment.get("user") or {}).get("login", "")
+        commenter_assoc = comment.get("author_association") or ""
+        if _trust(api, policy, commenter_login, commenter_assoc) is None:
+            return refused(
+                f"the commenter {commenter_login or '(unknown)'} is not in the "
+                f"{policy['organisation']} organisation"
+            )
+
+    author = (pull.get("user") or {}).get("login", "")
+    association = pull.get("author_association", "")
+    verdict = _trust(api, policy, author, association)
+    if verdict is not None:
+        return verdict
+    return refused(
+        f"{author} is not in the {policy['organisation']} organisation "
+        f"(association {association or 'NONE'})"
+    )
+
+
+def _trust(api, policy: dict, login: str, association: str) -> dict | None:
+    """Trusted? Returns the decision, or None when the answer is "no".
+
+    Order matters. A named bot is trusted outright, because a bot account is
+    never an organisation member. Otherwise organisation membership decides:
+    it is the thing the operator actually means by "us", and unlike
+    author_association it does not change with which account owns the repo.
+    Only when membership cannot be determined does author_association get a
+    say, so a missing App permission degrades to the old behaviour instead of
+    refusing everyone.
+    """
+    listed = {name.strip().lower() for name in (policy["trusted_authors"] or [])}
+    if (login or "").strip().lower() in listed:
+        return {
+            "trusted": True,
+            "undecided": False,
+            "reason": f"{login} is trusted: on the trusted-authors list",
+        }
+
+    org = policy["organisation"]
+    member = api.is_org_member(org, login) if org else None
+    if member is True:
+        return {
+            "trusted": True,
+            "undecided": False,
+            "reason": f"{login} is a member of the {org} organisation",
+        }
+    if member is False:
+        return None
+
+    # Could not tell. Fall back to the association, and say so.
+    if (association or "").upper() in policy["trusted_associations"]:
+        return {
+            "trusted": True,
+            "undecided": False,
+            "reason": f"{login} is trusted by association {association} "
+            f"(membership in {org} could not be checked)",
+        }
     return None
 
 
@@ -119,6 +244,13 @@ def run(
         head_sha = pr.head_sha
     except GitHubError as exc:
         return _fail(api, "", check_name, f"could not read the pull request: {exc}")
+
+    # The workflow's own gate has already refused an outsider, so the job
+    # never started. This is the backstop for a misconfigured caller: the
+    # same allow list, delivered by the workflow, merged with the repo's.
+    from_env = policy_mod.parse_author_list(os.environ.get("REVIEWBOT_TRUSTED_AUTHORS", ""))
+    if from_env:
+        policy["trusted_authors"] = list(dict.fromkeys(policy["trusted_authors"] + from_env))
 
     skip = policy_mod.should_skip(pr, policy)
     if skip:
@@ -242,6 +374,21 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument(
         "--checkout", required=True, help="path to the read-only checkout of the pull request head"
     )
+
+    gater = sub.add_parser(
+        "gate", help="decide whether this pull request may be reviewed, before any checkout"
+    )
+    gater.add_argument(
+        "--event",
+        default=os.environ.get("GITHUB_EVENT_PATH"),
+        help="path to the GitHub event payload",
+    )
+    gater.add_argument("--pr", type=int, default=None, help="pull request number")
+    gater.add_argument(
+        "--repo",
+        default=os.environ.get("GITHUB_REPOSITORY"),
+        help="owner/name of the repository",
+    )
     args = parser.parse_args(argv)
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("REVIEWBOT_TOKEN")
@@ -254,6 +401,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.event and os.path.exists(args.event):
         with open(args.event) as handle:
             event = json.load(handle)
+
+    if args.command == "gate":
+        decision = gate(
+            event=event,
+            repo=args.repo,
+            token=token,
+            trusted_authors=os.environ.get("REVIEWBOT_TRUSTED_AUTHORS", ""),
+            pr_number=args.pr,
+        )
+        verdict = "true" if decision["trusted"] else "false"
+        print(f"reviewbot gate: trusted={verdict} - {scrub(decision['reason'])}")
+        out_path = os.environ.get("GITHUB_OUTPUT")
+        if out_path:
+            with open(out_path, "a") as handle:
+                handle.write(f"trusted={verdict}\n")
+        # A refusal is the gate working, and exits 0: the job stops quietly and
+        # writes no comment and no check run. Not being able to decide is a
+        # different thing, and fails the step so the silence is visible.
+        return 1 if decision.get("undecided") else 0
 
     try:
         return run(

@@ -23,6 +23,23 @@ auto_merge:
   method: squash               # squash | merge | rebase
   authors: []                  # allow list; empty = nobody
 review_drafts: false
+# The org-only gate (spec section 6). Everything outside these two settings
+# gets no review, no comment and no check run. A bot account's association is
+# NONE or CONTRIBUTOR even when the bot is ours, so bots go in trusted_authors.
+# The organisation whose membership decides who may be reviewed. This is the
+# real trust model: author_association describes a person's relationship to one
+# REPOSITORY, and on the MarketDataApp user-account repos an org member reads
+# as COLLABORATOR while a stranger invited to one repo reads as COLLABORATOR
+# too. Membership tells them apart; association cannot.
+organisation: MarketData-App
+# Used only when the membership lookup is unavailable -- the App has not been
+# granted Organization members:read, or GitHub is unwell. Then, and only then,
+# the gate falls back to author_association.
+# COLLABORATOR is deliberately absent: GitHub uses it for anyone invited to
+# the repository at any permission level, read included, and such a person
+# need not be in the organisation. A repo that wants them adds it here.
+trusted_associations: [OWNER, MEMBER]
+trusted_authors: []             # extra logins, for bot accounts
 ignore_paths: ["**/*.lock", "**/dist/**"]
 ignore_authors: ["dependabot[bot]", "marketdata-docs-sync[bot]"]
 check_name: "Code review"
