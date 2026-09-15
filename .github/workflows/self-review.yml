@@ -19,3 +19,9 @@ jobs:
        startsWith(github.event.comment.body, '@marketdata-code-review'))
     uses: ./.github/workflows/review.yml
     secrets: inherit
+    with:
+      # Run the bot from the default branch, never from the pull request's
+      # own head: a pull request must not be reviewed by the code it is
+      # proposing (spec section 6). It also means there is no dependency on a
+      # v1 tag existing yet.
+      bot-ref: main
