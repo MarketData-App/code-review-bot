@@ -6065,7 +6065,9 @@ import sys
 import traceback
 
 from reviewbot import brief as brief_mod
-from reviewbot import config, findings, merge, policy as policy_mod, render, result as result_mod
+from reviewbot import config, findings, merge, render
+from reviewbot import policy as policy_mod
+from reviewbot import result as result_mod
 from reviewbot.backends import base as backends
 from reviewbot.github import GitHub, GitHubError
 from reviewbot.redact import scrub
