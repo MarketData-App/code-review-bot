@@ -3319,9 +3319,8 @@ small Python script named `claude` or `codex` on PATH and asserts against
 what the backend does with its output.
 """
 
-import json
-import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -3350,23 +3349,37 @@ VALID_RESULT = {
 
 @pytest.fixture
 def bin_dir(tmp_path, monkeypatch):
-    """An empty directory at the front of PATH."""
+    """The only directory on PATH, so no real CLI can be reached.
+
+    PATH is replaced, not prepended. A real `claude` and `codex` are installed
+    on the development machines and on the self-hosted runner; prepending
+    would leave `probe()` finding them, and the "not installed" tests would
+    pass against a live binary.
+    """
     path = tmp_path / "bin"
     path.mkdir()
-    monkeypatch.setenv("PATH", str(path) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("PATH", str(path))
     return path
 
 
 def write_script(bin_dir: Path, name: str, body: str) -> Path:
-    """Put an executable Python script on PATH under `name`."""
+    """Put an executable Python script on PATH under `name`.
+
+    The shebang names this interpreter by absolute path, because PATH holds
+    nothing but the fake CLI directory.
+    """
     script = bin_dir / name
-    script.write_text("#!/usr/bin/env python3\n" + body)
+    script.write_text(f"#!{sys.executable}\n" + body)
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return script
 
 
 def claude_script(payload, exit_code=0, echo_args=None, sleep=0.0):
-    """A fake `claude`: reads the brief on stdin, prints one claude -p JSON envelope."""
+    """A fake `claude`: reads the brief on stdin, prints one claude -p JSON envelope.
+
+    `payload` is JSON TEXT, embedded as a Python string literal and parsed at
+    run time. Interpolating it as Python source would break on `null`.
+    """
     return f"""
 import json, sys, time
 brief = sys.stdin.read()
@@ -3374,13 +3387,16 @@ time.sleep({sleep!r})
 if {echo_args!r}:
     open({echo_args!r}, "w").write(json.dumps({{"argv": sys.argv[1:], "brief": brief}}))
 print(json.dumps({{"type": "result", "is_error": False, "total_cost_usd": 0.01,
-                  "structured_output": {payload}}}))
+                  "structured_output": json.loads({payload!r})}}))
 sys.exit({exit_code})
 """
 
 
 def codex_script(payload, exit_code=0, echo_args=None, sleep=0.0):
-    """A fake `codex`: writes the result to the path after -o, prints JSONL to stdout."""
+    """A fake `codex`: writes the result to the path after -o, prints JSONL to stdout.
+
+    `payload` is JSON TEXT and is written to the output file verbatim.
+    """
     return f"""
 import json, sys, time
 brief = sys.stdin.read()
@@ -3390,16 +3406,17 @@ if {echo_args!r}:
     open({echo_args!r}, "w").write(json.dumps({{"argv": argv, "brief": brief}}))
 out = argv[argv.index("-o") + 1] if "-o" in argv else None
 if out:
-    open(out, "w").write({payload!r} if isinstance({payload!r}, str) else json.dumps({payload}))
+    open(out, "w").write({payload!r})
 print(json.dumps({{"type": "turn.completed", "usage": {{"input_tokens": 10}}}}))
 sys.exit({exit_code})
 """
 ```
 
-Note: `claude_script` and `codex_script` take `payload` as a Python literal
-that is interpolated into the script source. Pass `json.dumps(VALID_RESULT)`
-as a string when you want valid JSON, or a raw broken string for the malformed
-cases. The tests below show both.
+Note: `claude_script` and `codex_script` take `payload` as **JSON text**, not
+as a Python object. Pass `json.dumps(VALID_RESULT)` for a valid answer, or a
+raw broken string such as `'{"summary": "only this"}'` for the malformed
+cases. The text is embedded as a string literal and parsed inside the fake, so
+`null`, `true` and `false` survive.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -3560,7 +3577,7 @@ if not calls:
                       "structured_output": {{"summary": "only this"}}}}))
 else:
     print(json.dumps({{"type": "result", "is_error": False,
-                      "structured_output": {VALID_JSON}}}))
+                      "structured_output": json.loads({VALID_JSON!r})}}))
 """
     write_script(bin_dir, "claude", script)
     out = base.build("claude", policy, str(tmp_path)).review("BRIEF")
