@@ -311,11 +311,17 @@ class GitHub:
 
     # --- the whole picture ------------------------------------------------
 
-    def gather(self, number: int, max_diff_kb: int, check_name: str = "Code review") -> PRFacts:
+    def gather(
+        self,
+        number: int,
+        max_diff_kb: int,
+        check_name: str = "Code review",
+        ignore_paths: list[str] | None = None,
+    ) -> PRFacts:
         """Everything the engine needs about one pull request."""
         pull = self.pull_request(number)
         files = self.changed_files(number)
-        diff, unseen = cap_diff(self.diff(number), max_diff_kb)
+        diff, unseen = cap_diff(self.diff(number), max_diff_kb, ignore_paths)
         comments = self.issue_comments(number)
 
         previous = None

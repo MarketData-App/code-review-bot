@@ -38,7 +38,8 @@ class FakeGitHub:
     def repository(self):
         return self.repo_settings
 
-    def gather(self, number, max_diff_kb, check_name="Code review"):
+    def gather(self, number, max_diff_kb, check_name="Code review", ignore_paths=None):
+        self.gather_ignore_paths = ignore_paths
         return self.pr
 
     def upsert_review_comment(self, number, body):
@@ -513,3 +514,13 @@ def test_policy_trusted_authors_and_the_env_var_combine(live_claude, monkeypatch
     )
     assert review(api) == 0
     assert len(api.comments) == 1
+
+
+def test_the_ignore_paths_reach_the_diff_cap(live_claude):
+    # Otherwise a large ignored fixture spends the whole diff budget and hides
+    # the source beside it. ignore_paths used to be read only by the skip.
+    api = FakeGitHub(
+        make_pr(), files={".github/code-review/policy.yml": "ignore_paths: ['tests/fixtures/**']\n"}
+    )
+    review(api)
+    assert api.gather_ignore_paths == ["tests/fixtures/**"]

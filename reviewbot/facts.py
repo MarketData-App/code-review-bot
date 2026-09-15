@@ -41,11 +41,20 @@ class PRFacts:
         return [f["path"] for f in self.changed_files]
 
 
-def cap_diff(diff: str, max_kb: int) -> tuple[str, list[str]]:
+def cap_diff(
+    diff: str, max_kb: int, ignore_paths: list[str] | None = None
+) -> tuple[str, list[str]]:
     """Keep whole per-file sections up to the budget; name the files dropped.
 
     A file section is never split. The model must not reason about half a hunk
     and report the other half as missing.
+
+    Files matching `ignore_paths` are dropped before the budget is counted,
+    and are not reported as unseen: the repository has said it does not want
+    them reviewed, so they must not spend the budget or block `ready`. Without
+    this, one large ignored fixture hides every file after it and the pull
+    request can never be ready, because allow_ready_with_unseen_files is
+    false by default.
     """
     if not diff:
         return "", []
@@ -64,6 +73,8 @@ def cap_diff(diff: str, max_kb: int) -> tuple[str, list[str]]:
     used = len(preamble.encode("utf-8"))
     unseen = []
     for path, text in sections:
+        if matches_any(path, ignore_paths or []):
+            continue
         size = len(text.encode("utf-8"))
         # Once one file is dropped, every later file is dropped too. A diff
         # that skips a file in the middle reads as if that file were unchanged.

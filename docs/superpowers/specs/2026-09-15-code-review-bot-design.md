@@ -347,7 +347,11 @@ prerequisites for the operator.
   missing backend.
 - Diff too large: hunks truncate at the limit, the file list stays whole, the
   brief and the comment say which files were unseen; the verdict cannot be
-  ready with unseen files unless policy allows.
+  ready with unseen files unless policy allows. Files matching `ignore_paths`
+  are dropped before the budget is counted and are never reported as unseen —
+  otherwise one large ignored fixture spends the whole budget, hides every
+  file after it, and the pull request can never be ready. `ignore_paths` does
+  two jobs: the all-match skip, and this.
 - GitHub calls retry with backoff on 403/5xx. Backend calls do not retry on
   timeout; they fail over.
 - Cancelled runs write nothing.

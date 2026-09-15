@@ -46,6 +46,10 @@ organisation: MarketData-App
 # need not be in the organisation. A repo that wants them adds it here.
 trusted_associations: [OWNER, MEMBER]
 trusted_authors: []             # extra logins, for bot accounts
+# Two jobs. A pull request whose files ALL match is skipped entirely, with no
+# comment and no check run. And a matching file is dropped from the diff
+# before the size budget is counted, so a large lockfile or fixture cannot
+# spend the budget and hide the source beside it.
 ignore_paths: ["**/*.lock", "**/dist/**"]
 ignore_authors: ["dependabot[bot]", "marketdata-docs-sync[bot]"]
 check_name: "Code review"

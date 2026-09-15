@@ -251,7 +251,7 @@ def run(
         return _fail(api, "", check_name, f"could not read {CONFIG_DIR}: {exc}")
 
     try:
-        pr = api.gather(number, policy["max_diff_kb"], check_name)
+        pr = api.gather(number, policy["max_diff_kb"], check_name, policy["ignore_paths"])
         head_sha = pr.head_sha
     except GitHubError as exc:
         return _fail(api, "", check_name, f"could not read the pull request: {exc}")

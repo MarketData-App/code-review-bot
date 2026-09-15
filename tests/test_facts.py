@@ -141,3 +141,52 @@ def test_prfacts_exposes_the_changed_paths():
         comments_since=[],
     )
     assert item.paths == ["a.py"]
+
+
+# --- ignore_paths and the diff budget --------------------------------------
+#
+# Found by the sdk-py agent: ignore_paths was read in exactly one place, the
+# all-match skip. It did nothing for the diff budget. A pull request touching
+# one 5.2 MB fixture spent the whole budget on a file nobody wanted reviewed,
+# hid every file after it, and then could never be ready because
+# allow_ready_with_unseen_files is false.
+
+BIG_FIXTURE = (
+    "diff --git a/tests/fixtures/news.json b/tests/fixtures/news.json\n@@\n+" + ("x" * 4000) + "\n"
+)
+SOURCE = "diff --git a/src/client.py b/src/client.py\n@@\n+    retry()\n"
+
+
+def test_an_ignored_file_does_not_spend_the_diff_budget():
+    kept, unseen = facts.cap_diff(
+        BIG_FIXTURE + SOURCE, max_kb=1, ignore_paths=["tests/fixtures/**"]
+    )
+    assert "src/client.py" in kept
+    assert "+    retry()" in kept
+    assert unseen == []
+
+
+def test_an_ignored_file_is_not_reported_as_unseen():
+    # It is excluded by policy, not hidden by accident. Calling it unseen
+    # would block `ready` for a file the repository asked us to ignore.
+    _, unseen = facts.cap_diff(BIG_FIXTURE, max_kb=1, ignore_paths=["tests/fixtures/**"])
+    assert unseen == []
+
+
+def test_an_ignored_file_is_dropped_from_the_diff_entirely():
+    kept, _ = facts.cap_diff(BIG_FIXTURE + SOURCE, max_kb=400, ignore_paths=["tests/fixtures/**"])
+    assert "tests/fixtures/news.json" not in kept
+    assert "src/client.py" in kept
+
+
+def test_without_ignore_paths_the_old_behaviour_holds():
+    kept, unseen = facts.cap_diff(BIG_FIXTURE + SOURCE, max_kb=1)
+    assert "src/client.py" not in kept
+    assert unseen == ["tests/fixtures/news.json", "src/client.py"]
+
+
+def test_a_real_overflow_still_reports_unseen_files():
+    big_source = "diff --git a/src/huge.py b/src/huge.py\n@@\n+" + ("y" * 4000) + "\n"
+    kept, unseen = facts.cap_diff(big_source + SOURCE, max_kb=1, ignore_paths=["tests/fixtures/**"])
+    assert unseen == ["src/huge.py", "src/client.py"]
+    assert kept.strip() == ""
