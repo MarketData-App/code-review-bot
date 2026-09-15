@@ -78,6 +78,16 @@ instead).
   COLLABORATOR and so does a stranger invited to a single repository.
   Membership separates them; association cannot.
 
+  **`author_association` in a webhook payload is not usable for this, at all.**
+  Measured on 2026-09-15, pull request #1, author MarketDataApp: the REST API
+  reports `MEMBER` and the `pull_request_target` payload reports `CONTRIBUTOR`
+  for the same pull request. The payload computes the association from
+  *public* organisation membership, and this organisation's `public_members`
+  list is empty, so every member reads as `CONTRIBUTOR` there. A
+  workflow-level filter on the payload value refuses the entire organisation,
+  silently. The job-level `if:` therefore filters on trigger only, and
+  `reviewbot gate` is the sole authorisation.
+
   Two exceptions. Bot accounts go in `trusted_authors`, because a bot is never
   an org member. And `author_association` remains the fallback for when the
   membership lookup cannot answer, so a missing permission degrades to the
