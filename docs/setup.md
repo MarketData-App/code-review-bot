@@ -59,8 +59,20 @@ one fewer value to copy.
 secret can only be granted to repositories *in that organisation*, and the
 `sdk-*` repositories are owned by the MarketDataApp user account, so they are
 not in the set at all. There is no sharing mechanism across that boundary:
-`secrets: inherit` passes the *caller's* secrets, and the caller is the SDK
-repository.
+`secrets: inherit` does not help either, and not only for the reason it looks
+like: it passes the *caller's* secrets, and it does so **only to a reusable
+workflow in the same organisation**. A repository on the MarketDataApp user
+account calling this one, owned by MarketData-App, crosses an owner boundary,
+and `inherit` delivers nothing. The call then fails before any step runs, with
+an error naming a secret that is sitting in the repository's settings:
+
+```
+Error when evaluating 'secrets' ... Secret CODE_REVIEW_APP_PRIVATE_KEY
+is required, but not provided while calling
+```
+
+That is why `docs/caller-workflow.yml` names the secrets explicitly. The
+explicit form works on both sides of the boundary; `inherit` works on one.
 
 Two ways to avoid the duplication, both larger decisions:
 

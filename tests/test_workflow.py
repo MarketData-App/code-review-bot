@@ -101,9 +101,8 @@ def test_the_token_reaches_the_bot_through_the_environment():
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
 
 
-def test_the_caller_example_uses_pull_request_target_and_inherits_secrets():
+def test_the_caller_example_uses_pull_request_target():
     assert "pull_request_target" in CALLER[ON]
-    assert CALLER["jobs"]["review"]["secrets"] == "inherit"
 
 
 def test_the_caller_example_triggers_on_the_five_actions():
@@ -279,3 +278,16 @@ def test_the_runner_is_derived_when_no_override_is_given():
 
 def test_an_explicit_runner_still_wins():
     assert "inputs.runs-on != ''" in REVIEW["jobs"]["review"]["runs-on"]
+
+
+def test_the_caller_template_names_its_secrets_explicitly():
+    # `secrets: inherit` only delivers to a reusable workflow in the SAME
+    # organisation. The sdk-* repositories are on the MarketDataApp user
+    # account and this one is in MarketData-App, so inherit crosses an owner
+    # boundary and delivers nothing -- and the call then fails naming a secret
+    # that is present in the repository's settings.
+    secrets = CALLER["jobs"]["review"]["secrets"]
+    assert secrets != "inherit"
+    assert set(secrets) == {"CODE_REVIEW_APP_PRIVATE_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
+    for name, value in secrets.items():
+        assert value == "${{ secrets." + name + " }}"

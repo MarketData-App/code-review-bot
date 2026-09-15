@@ -1,6 +1,8 @@
 name: Code review
 
-# The engine. A target repository calls this with `secrets: inherit`.
+# The engine. A target repository names the secrets explicitly when it calls
+# this; `secrets: inherit` only delivers within one organisation, and the
+# sdk-* repositories are on a user account. See docs/caller-workflow.yml.
 #
 # This job runs with the caller's secrets on a pull_request_target event, so
 # it must never execute anything from the pull request. It installs the bot

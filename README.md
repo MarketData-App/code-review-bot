@@ -33,7 +33,9 @@ on:
 jobs:
   review:
     uses: MarketData-App/code-review-bot/.github/workflows/review.yml@main
-    secrets: inherit
+    secrets:
+      CODE_REVIEW_APP_PRIVATE_KEY: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
 Private repositories add `with: { runs-on: '["self-hosted", "marketdata-docker"]' }`.
