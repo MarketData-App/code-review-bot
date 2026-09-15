@@ -77,6 +77,13 @@ one fewer value to copy.
 |---|---|---|
 | `CODE_REVIEW_APP_PRIVATE_KEY` | The whole `.pem` file, header and footer included | The same two places |
 | `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` | The same two places |
+
+The workflow marks the two model credentials optional, because a repository
+may run either backend. **A repository that names one backend in
+`policy.backends` makes that backend's credential required in practice.**
+With `backends: [claude]` and no `CLAUDE_CODE_OAUTH_TOKEN` the probe finds
+Claude not installed, no backend is live, and the run reports an error rather
+than reviewing.
 | `OPENAI_API_KEY` | Optional. Only if a repo runs the Codex backend | The same two places |
 
 **Why the MarketDataApp repositories need their own copies.** An organisation
