@@ -508,3 +508,25 @@ def test_gather_caps_the_diff_and_names_the_unseen_files(api, transport):
     transport.add("GET", "/repos/MarketData-App/api/commits/abc/status", data={"state": "pending"})
     pr = api.gather(7, max_diff_kb=1)
     assert pr.unseen_files == ["b.py"]
+
+
+def test_file_at_ref_decodes_the_content(api, transport):
+    import base64
+
+    encoded = base64.b64encode(b"mode: all\n").decode()
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/contents/.github/code-review/policy.yml?ref=main",
+        data={"encoding": "base64", "content": encoded},
+    )
+    assert api.file_at_ref(".github/code-review/policy.yml", "main") == "mode: all\n"
+
+
+def test_a_missing_file_reads_as_none(api, transport):
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/contents/.github/code-review/policy.yml?ref=main",
+        status=404,
+        text="Not Found",
+    )
+    assert api.file_at_ref(".github/code-review/policy.yml", "main") is None

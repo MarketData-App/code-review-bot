@@ -141,6 +141,28 @@ class GitHub:
     def issue_comments(self, number: int) -> list[dict]:
         return self._paged(f"/repos/{self.repo}/issues/{number}/comments")
 
+    def file_at_ref(self, path: str, ref: str) -> str | None:
+        """A file's text at a ref, or None when it is not there.
+
+        Policy and review rules are read from the base branch, so a pull
+        request cannot rewrite the rules it is judged by.
+        """
+        import base64
+
+        quoted = urllib.parse.quote(path)
+        try:
+            reply = self._request(
+                "GET", f"/repos/{self.repo}/contents/{quoted}?ref={urllib.parse.quote(ref)}"
+            )
+        except GitHubError as exc:
+            if " 404" in str(exc):
+                return None
+            raise
+        data = reply.data or {}
+        if data.get("encoding") != "base64" or "content" not in data:
+            return None
+        return base64.b64decode(data["content"]).decode("utf-8")
+
     def repository(self) -> dict:
         """The repository object. Read for `allow_auto_merge` before arming."""
         return self._request("GET", f"/repos/{self.repo}").data or {}
