@@ -5119,7 +5119,9 @@ def test_annotations_beyond_fifty_go_in_a_second_call(api, transport):
 
 def test_labels_are_added_and_only_present_ones_removed(api, transport):
     transport.add("POST", "/repos/MarketData-App/api/issues/7/labels", data=[])
-    transport.add("DELETE", "/repos/MarketData-App/api/issues/7/labels/review:%20needs%20changes",
+    # urllib.parse.quote escapes the colon too, so the path is fully encoded.
+    transport.add("DELETE",
+                  "/repos/MarketData-App/api/issues/7/labels/review%3A%20needs%20changes",
                   status=200, data=[])
     api.apply_labels(7, add=["review: ready"], remove=["review: needs changes", "review: ready"],
                      current=["review: needs changes", "enhancement"])
