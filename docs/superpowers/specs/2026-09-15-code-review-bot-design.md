@@ -233,7 +233,11 @@ gate: true                     # check = failure on blocked, else success
 require_ci_green: true         # blocked while the head commit's CI is red
 proof:
   required: true               # runtime evidence expected for behavior changes
-  paths: []                    # empty = judge per change; else only these paths
+  # ANY-match over the whole PR, not a per-file filter: one matching file
+  # turns the gate on for the entire change. Use it as a FLOOR under the
+  # model's judgement -- a PR touching nothing here can never be blocked for
+  # missing proof. Empty means every PR. Contrast auto_approve_paths (ALL).
+  paths: []
 ratings: true                  # show the 1-6 tier row
 decision_packets: true         # allow "decision needed" escalation
 auto_approve: false            # approve via PR review when clean

@@ -13,7 +13,13 @@ gate: true                     # check = failure on blocked, else success
 require_ci_green: true         # blocked while the head commit's CI is red
 proof:
   required: true               # runtime evidence expected for behavior changes
-  paths: []                    # empty = judge per change; else only these paths
+  # ANY-match over the whole pull request, not a per-file filter: one matching
+  # file switches the gate on for every file in the change. Its use is as a
+  # FLOOR under the model's judgement -- a pull request touching nothing here
+  # can never be blocked for missing proof, however the model labels it. Empty
+  # means the gate applies to every pull request.
+  # Note the asymmetry with auto_approve_paths below, which is ALL-match.
+  paths: []
 ratings: true                  # show the 1-6 tier row
 decision_packets: true         # allow "decision needed" escalation
 auto_approve: false            # approve via PR review when clean

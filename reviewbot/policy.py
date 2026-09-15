@@ -86,7 +86,14 @@ def should_skip(pr: PRFacts, policy: dict) -> str | None:
 
 
 def proof_applies(pr: PRFacts, policy: dict) -> bool:
-    """True when the proof gate covers this pull request."""
+    """True when the proof gate covers this pull request.
+
+    `proof.paths` is an ANY-match over the whole pull request, not a per-file
+    filter: one matching file turns the gate on for the entire change. It
+    exists as a floor under the model's judgement, so a pull request that
+    touches nothing matching cannot be blocked for missing proof even when the
+    model mislabels it. Contrast `auto_approve_paths`, which is ALL-match.
+    """
     if not policy["proof"]["required"]:
         return False
     paths = policy["proof"]["paths"]

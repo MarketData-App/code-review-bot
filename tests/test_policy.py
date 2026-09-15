@@ -503,3 +503,33 @@ def test_only_the_documented_commands_are_bot_commands():
     assert not policy.is_bot_command(f"{policy.HANDLE}")
     assert not policy.is_bot_command("re-review please")
     assert not policy.is_bot_command("")
+
+
+def test_proof_paths_is_an_any_match_over_the_whole_pull_request(base_policy):
+    # Not a per-file filter. One matching file switches the gate on for the
+    # whole pull request, including the files that do not match. The two path
+    # options use opposite quantifiers: proof.paths is ANY, auto_approve_paths
+    # is ALL.
+    base_policy["proof"]["paths"] = ["src/**"]
+    pr = make_pr(
+        changed_files=[
+            {"path": "README.md", "status": "modified", "additions": 1, "deletions": 0},
+            {"path": "src/client.py", "status": "modified", "additions": 1, "deletions": 0},
+        ]
+    )
+    assert policy.proof_applies(pr, base_policy) is True
+
+
+def test_proof_paths_is_a_floor_not_a_filter(base_policy):
+    # Its real use: a pull request that touches nothing matching can never be
+    # blocked for missing proof, whatever the model decides. That is a floor
+    # under the model's judgement on docs-only changes.
+    base_policy["proof"]["paths"] = ["src/**"]
+    pr = make_pr(
+        changed_files=[
+            {"path": "README.md", "status": "modified", "additions": 1, "deletions": 0},
+        ]
+    )
+    assert policy.proof_applies(pr, base_policy) is False
+    decision = policy.decide(make_result("ready", proof="missing"), pr, base_policy, {})
+    assert decision.verdict == "ready"
