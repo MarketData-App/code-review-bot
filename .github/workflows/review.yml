@@ -37,9 +37,20 @@ on:
         description: Where the pull request head is checked out.
         type: string
         default: pr
+      app-id:
+        description: >
+          The GitHub App's numeric id. NOT a secret: an unauthenticated
+          GET /apps/marketdata-code-review returns it. It is an input rather
+          than a secret so a repository outside the MarketData-App
+          organisation, which cannot read the org's secrets, has one fewer
+          value to copy.
+        type: string
+        default: '4955329'
     secrets:
       CODE_REVIEW_APP_ID:
-        required: true
+        # Optional: the app-id input above carries the same value. Set this
+        # only to override it.
+        required: false
       CODE_REVIEW_APP_PRIVATE_KEY:
         required: true
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -125,7 +136,7 @@ jobs:
         if: steps.pr.outputs.number != ''
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.CODE_REVIEW_APP_ID }}
+          app-id: ${{ secrets.CODE_REVIEW_APP_ID || inputs.app-id }}
           private-key: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
@@ -149,7 +160,7 @@ jobs:
         continue-on-error: true
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.CODE_REVIEW_APP_ID }}
+          app-id: ${{ secrets.CODE_REVIEW_APP_ID || inputs.app-id }}
           private-key: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
           owner: MarketData-App
 

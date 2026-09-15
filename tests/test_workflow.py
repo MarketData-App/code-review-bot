@@ -229,3 +229,28 @@ def test_the_org_token_is_minted_before_the_gate():
     assert names.index("mint an organisation token for the membership check") < names.index(
         "refuse a pull request from outside the organisation"
     )
+
+
+def test_the_app_id_is_an_input_not_a_required_secret():
+    # The App ID is not secret material: an unauthenticated
+    # GET /apps/marketdata-code-review returns it. Making it a secret forced a
+    # repository outside the organisation -- which cannot read org secrets --
+    # to copy a third value for no security benefit.
+    inputs = REVIEW[ON]["workflow_call"]["inputs"]
+    assert inputs["app-id"]["default"] == "4955329"
+    assert REVIEW[ON]["workflow_call"]["secrets"]["CODE_REVIEW_APP_ID"]["required"] is False
+
+
+def test_the_secret_still_overrides_the_input():
+    for name in ("mint the app installation token", "mint an organisation token"):
+        assert step(name)["with"]["app-id"] == (
+            "${{ secrets.CODE_REVIEW_APP_ID || inputs.app-id }}"
+        )
+
+
+def test_only_two_values_are_genuinely_secret():
+    # What a repository outside the organisation must actually copy.
+    secrets = REVIEW[ON]["workflow_call"]["secrets"]
+    required = {k for k, v in secrets.items() if v.get("required")}
+    assert required == {"CODE_REVIEW_APP_PRIVATE_KEY"}
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in secrets

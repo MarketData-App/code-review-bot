@@ -44,15 +44,31 @@ Install the App on both accounts, on **All repositories**:
 
 Generate a private key on the App's page. It downloads as a `.pem` file.
 
+**Only two values are genuinely secret.** The App's numeric id is not: an
+unauthenticated `GET /apps/marketdata-code-review` returns it. It is a
+workflow input with a default, so a repository outside the organisation has
+one fewer value to copy.
+
 | Secret name | Value | Where |
 |---|---|---|
-| `CODE_REVIEW_APP_ID` | The App's numeric id, from its settings page | Org secret on MarketData-App; repository secret on each MarketDataApp repo |
 | `CODE_REVIEW_APP_PRIVATE_KEY` | The whole `.pem` file, header and footer included | The same two places |
 | `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` | The same two places |
 | `OPENAI_API_KEY` | Optional. Only if a repo runs the Codex backend | The same two places |
 
-A user account has no organisation secrets, so the MarketDataApp repositories
-get repository secrets. For the organisation secrets, set the repository
+**Why the MarketDataApp repositories need their own copies.** An organisation
+secret can only be granted to repositories *in that organisation*, and the
+`sdk-*` repositories are owned by the MarketDataApp user account, so they are
+not in the set at all. There is no sharing mechanism across that boundary:
+`secrets: inherit` passes the *caller's* secrets, and the caller is the SDK
+repository.
+
+Two ways to avoid the duplication, both larger decisions:
+
+- **Move the repository into MarketData-App.** Organisation secrets then
+  reach it, and `uses:` can resolve a private bot repository once its Actions
+  access is set to "Accessible from repositories in the organization" — so
+  this repository would not need to be public at all.
+- **Accept two secrets per SDK repository**, which is where things stand. For the organisation secrets, set the repository
 access to the repositories that call the bot.
 
 ## 4. Turn it on for a repository
