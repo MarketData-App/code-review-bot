@@ -57,11 +57,25 @@ jobs:
     # decision is the "Refuse a pull request from outside the organisation"
     # step, which runs before anything from the pull request is fetched, and
     # which is `reviewbot gate` -- unit tested, unlike a YAML expression.
-    # TEMPORARY, for one run. The precise filter skipped the whole job twice
-    # (runs 35012284457 and 35012508343) with no error reported anywhere, and
-    # a skipped job runs no steps, so nothing could tell us why. This admits
-    # our three triggers and lets the first step print what the expression
-    # actually sees. `reviewbot gate` is the real boundary and is unchanged.
+    # A TRIGGER FILTER, NOT THE GATE. It deliberately does not look at
+    # author_association, and that is not laziness.
+    #
+    # The event payload and the REST API disagree about it. Measured on
+    # 2026-09-15, pull request #1, author MarketDataApp:
+    #
+    #   REST API      author_association: MEMBER
+    #   event payload author_association: CONTRIBUTOR
+    #
+    # The payload computes the association from PUBLIC organisation
+    # membership, and this org's public_members list is empty, so every member
+    # reads as CONTRIBUTOR there. A filter on the payload value would have
+    # refused every member of the organisation, on every pull request.
+    #
+    # So the only authorisation signal is `reviewbot gate` below, which asks
+    # the API. The cost of filtering here on trigger alone is that an
+    # outsider's pull request starts a job that mints a token and refuses:
+    # nothing from the pull request is fetched, because every step after the
+    # gate requires steps.gate.outputs.trusted == 'true'.
     if: >
       github.event_name == 'pull_request_target' ||
       github.event_name == 'issue_comment' ||

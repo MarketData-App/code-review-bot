@@ -192,13 +192,18 @@ def test_the_dogfood_workflow_runs_the_bot_from_the_default_branch():
     assert SELF["jobs"]["review"]["with"]["bot-ref"] == "main"
 
 
-# The two tests that pinned the precise wording of the job-level `if:` are
-# parked while the filter is reduced to its three triggers for one diagnostic
-# run (see the comment in review.yml). They are restored with the filter.
-# `reviewbot gate` is the real boundary; tests/test_gate.py is untouched.
-
-
 def test_the_first_filter_admits_the_three_triggers():
     gate = REVIEW["jobs"]["review"]["if"]
     for event in ("pull_request_target", "issue_comment", "workflow_dispatch"):
         assert event in gate
+
+
+def test_the_filter_does_not_authorise_on_author_association():
+    # Measured 2026-09-15 on pull request #1, author MarketDataApp:
+    #   REST API      author_association: MEMBER
+    #   event payload author_association: CONTRIBUTOR
+    # The payload reports PUBLIC organisation membership, and this org has
+    # none, so a filter on the payload value refuses every member of the
+    # organisation. `reviewbot gate` asks the API instead. Do not "restore"
+    # an association check here.
+    assert "author_association" not in REVIEW["jobs"]["review"]["if"]
