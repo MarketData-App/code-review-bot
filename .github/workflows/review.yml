@@ -118,7 +118,9 @@ jobs:
     if: >
       github.event_name == 'pull_request_target' ||
       github.event_name == 'issue_comment' ||
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success')
     # Unset means derive it, and deriving is what stops a caller landing in the
     # silent queue described on the input above.
     runs-on: ${{ fromJSON(inputs.runs-on != '' && inputs.runs-on || (github.event.repository.private && '["self-hosted", "marketdata-docker"]' || '["ubuntu-latest"]')) }}
@@ -167,9 +169,17 @@ jobs:
           FROM_PR: ${{ github.event.pull_request.number }}
           FROM_ISSUE: ${{ github.event.issue.number }}
           FROM_INPUT: ${{ github.event.inputs.pr }}
+          # A workflow_run payload carries the pull request only for a branch in
+          # THIS repository; for a fork it is empty, and `reviewbot` resolves it
+          # from the head sha instead. So an empty value here is not an error.
+          FROM_RUN: ${{ github.event.workflow_run.pull_requests[0].number }}
         run: |
-          number="${FROM_PR:-${FROM_ISSUE:-${FROM_INPUT:-}}}"
+          number="${FROM_PR:-${FROM_ISSUE:-${FROM_INPUT:-${FROM_RUN:-}}}}"
           if [ -z "$number" ]; then
+            if [ "${{ github.event_name }}" = "workflow_run" ]; then
+              echo "A workflow_run for a fork carries no pull request number."
+              echo "reviewbot resolves it from the head sha, so this is not a stop."
+            fi
             echo "No pull request number in this event; nothing to review."
             echo "number=" >> "$GITHUB_OUTPUT"
           else

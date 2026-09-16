@@ -262,6 +262,24 @@ class GitHub:
             return ""
         return "\n".join(self._TIMESTAMP.sub("", line) for line in raw.splitlines())
 
+    def pull_for_sha(self, sha: str) -> int | None:
+        """The open pull request whose head is `sha`, or None.
+
+        Needed for a `workflow_run` trigger on a FORK's pull request, where
+        GitHub leaves `workflow_run.pull_requests` empty. A closed pull request
+        is not a review target, and an unreadable answer is None rather than an
+        error -- a trigger that cannot identify its pull request should do
+        nothing, not fail.
+        """
+        try:
+            found = self._request("GET", f"/repos/{self.repo}/commits/{sha}/pulls").data or []
+        except GitHubError:
+            return None
+        for item in found:
+            if isinstance(item, dict) and item.get("state") == "open" and item.get("number"):
+                return int(item["number"])
+        return None
+
     def check_results(self, sha: str, exclude_check_name: str) -> list[dict]:
         """Every other check run on `sha`, with whatever output it carries.
 

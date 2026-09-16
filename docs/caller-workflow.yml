@@ -12,10 +12,18 @@ name: Code review
 #
 # Three ways to live with that, in order of preference:
 #
-#   1. Trigger on CI finishing instead. Add a `workflow_run` trigger naming
-#      your test workflow and `types: [completed]`. The bot does not yet read a
-#      pull request number out of a `workflow_run` payload, so this needs a
-#      small change in the bot first -- ask before relying on it.
+#   1. Trigger on CI finishing instead, which is now SUPPORTED and is the
+#      recommended shape. Name your test workflow and filter on success:
+#
+#        on:
+#          workflow_run:
+#            workflows: ["Tests"]        # the `name:` of your CI workflow
+#            types: [completed]
+#
+#      The reusable workflow already refuses a `workflow_run` whose conclusion
+#      is not `success`, and reads the pull request number from the payload --
+#      falling back to a head-sha lookup for a fork, where GitHub leaves
+#      `pull_requests` empty.
 #   2. Keep `workflow_dispatch` only, and review deliberately. This is what
 #      sdk-py does today.
 #   3. Set `require_ci_green: false` in the target repository's policy and
