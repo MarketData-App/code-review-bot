@@ -33,7 +33,25 @@ APPROVAL_BODY = "The code review bot found nothing blocking and the evidence is 
 
 
 def pr_number_from_event(event: dict) -> int | None:
-    """The pull request this event is about, or None when there is nothing to do."""
+    """The pull request this event is about, or None when there is nothing to do.
+
+    A `workflow_run` event is how a review gets triggered by CI FINISHING rather
+    than by the push that starts it. `pull_request_target` fires on `opened` and
+    `synchronize`, which is the moment CI starts -- and since the review skips a
+    commit whose checks are still running, an automatic review would skip and
+    never return. Measured on sdk-py: CI takes ~75s, a review reaches the gate
+    in 30-40.
+
+    GitHub leaves `workflow_run.pull_requests` EMPTY for a fork's pull request,
+    so this returns None there rather than guessing; the caller resolves it by
+    head sha with an API call, which this module must not make.
+    """
+    run = event.get("workflow_run")
+    if isinstance(run, dict):
+        for item in run.get("pull_requests") or []:
+            if isinstance(item, dict) and item.get("number"):
+                return int(item["number"])
+        return None
     if "pull_request" in event and isinstance(event["pull_request"], dict):
         number = event["pull_request"].get("number")
         if number:
@@ -49,6 +67,21 @@ def pr_number_from_event(event: dict) -> int | None:
     inputs = event.get("inputs") or {}
     if inputs.get("pr"):
         return int(inputs["pr"])
+    return None
+
+
+def _resolve_pr(event: dict, api, pr_number: int | None) -> int | None:
+    """The pull request to act on, including the fork case a payload cannot answer.
+
+    `workflow_run.pull_requests` is empty for a fork's pull request, so the head
+    sha is looked up here -- in the layer that is allowed to call the API.
+    """
+    number = pr_number or pr_number_from_event(event)
+    if number:
+        return number
+    run = event.get("workflow_run")
+    if isinstance(run, dict) and run.get("head_sha") and api is not None:
+        return api.pull_for_sha(str(run["head_sha"]))
     return None
 
 
@@ -95,11 +128,10 @@ def gate(
     "could not decide" are different outcomes: the first is the gate working,
     the second must fail the step rather than skip the review in silence.
     """
-    number = pr_number or pr_number_from_event(event)
+    api = api or GitHub(repo, token)
+    number = _resolve_pr(event, api, pr_number)
     if number is None:
         return refused("the event names no pull request to review")
-
-    api = api or GitHub(repo, token)
 
     try:
         pull = api.pull_request(number)
@@ -231,12 +263,12 @@ def run(
     force: bool = False,
 ) -> int:
     """One whole review. Returns the process exit code."""
-    number = pr_number or pr_number_from_event(event)
+    api = api or GitHub(repo, token)
+    number = _resolve_pr(event, api, pr_number)
     if number is None:
         print("reviewbot: nothing to review for this event")
         return 0
 
-    api = api or GitHub(repo, token)
     head_sha = ""
     check_name = config.defaults()["check_name"]
 

@@ -501,3 +501,17 @@ def test_the_caller_template_warns_about_the_ci_gate_and_automatic_triggers():
     text = (ROOT / "docs/caller-workflow.yml").read_text()
     assert "CI has not finished" in text
     assert "workflow_run" in text
+
+
+def test_a_successful_ci_run_can_trigger_a_review():
+    # The gate skips a commit whose checks are still running, and
+    # pull_request_target fires when CI STARTS. Without a workflow_run trigger
+    # an automatic review skips and never returns.
+    cond = REVIEW["jobs"]["review"]["if"]
+    assert "workflow_run" in cond
+    assert "conclusion == 'success'" in cond, "a FAILED ci run must not start a review"
+
+
+def test_the_pr_number_step_reads_a_workflow_run_payload():
+    run = step("Work out which pull request this is")
+    assert "workflow_run.pull_requests[0].number" in run["env"]["FROM_RUN"]
