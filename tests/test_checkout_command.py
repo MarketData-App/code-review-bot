@@ -521,8 +521,39 @@ def test_a_repository_whose_policy_omits_codex_never_takes_the_lease(tmp_path, t
     assert not any("lease.json" in c["path"] for c in transport.calls)
 
 
-def test_a_repository_that_does_run_codex_still_borrows(tmp_path, transport, capsys):
-    policy_route(transport, "backends: [claude, codex]\n")
+def test_the_default_policy_does_not_borrow_because_mode_first_never_reaches_codex(
+    tmp_path, transport, capsys
+):
+    # The shipped default. `mode: first` runs ready[0], so Claude reviews and
+    # Codex never does -- borrowing would hold the org-wide lease for nothing.
+    policy_route(transport, "backends: [claude, codex]\nmode: first\n")
+    home = tmp_path / "codex-home"
+    assert (
+        cli.main(
+            [
+                "credential-checkout",
+                "--store",
+                STORE,
+                "--holder",
+                "MarketDataApp/sdk-py#7",
+                "--run-url",
+                "https://run/1",
+                "--codex-home",
+                str(home),
+                "--repo",
+                "MarketDataApp/sdk-py",
+                "--pr",
+                "7",
+            ]
+        )
+        == 0
+    )
+    assert "fetched=false" in capsys.readouterr().out
+    assert not any("lease.json" in c["path"] for c in transport.calls)
+
+
+def test_codex_first_under_mode_first_does_borrow(tmp_path, transport, capsys):
+    policy_route(transport, "backends: [codex, claude]\nmode: first\n")
     free_lease(transport)
     issue_copy(transport)
     home = tmp_path / "codex-home"

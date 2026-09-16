@@ -283,7 +283,14 @@ jobs:
           inputs.credential-store != '' &&
           env.HAS_OPENAI_API_KEY != 'true'
         env:
+          # Two tokens, because they answer two different questions. The store
+          # lives in the MarketData-App organisation, so the ORG token reads
+          # the lease and the issued credential. The target repository's policy
+          # is read with the token scoped to THAT repository -- the org
+          # installation cannot see a private repository on the MarketDataApp
+          # user account, where several sdk-* siblings live.
           GITHUB_TOKEN: ${{ steps.org-token.outputs.token }}
+          REVIEWBOT_TARGET_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           uv run --project bot reviewbot credential-checkout \
             --store "${{ inputs.credential-store }}" \

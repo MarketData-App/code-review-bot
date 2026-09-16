@@ -1,0 +1,14 @@
+# Code review bot, reviewing itself. Overrides the bot's own defaults; anything
+# absent keeps the default. See reviewbot/defaults/policy.yml.
+
+# Codex first, and `mode: first` runs the first LIVE backend -- so Codex
+# reviews this repository when it has a credential, and Claude reviews it when
+# Codex does not. Dogfooding the backend that gets the least exercise, without
+# losing a review when its credential is unavailable.
+#
+# This ordering also matters to the lease: `credential-checkout` skips
+# borrowing when `mode: first` and codex is not first, because in that case
+# codex is built, probed and never invoked. Listing codex first is what makes
+# this repository actually borrow.
+backends: [codex, claude]
+mode: first
