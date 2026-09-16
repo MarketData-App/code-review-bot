@@ -6,6 +6,7 @@ that matter are asserted here instead.
 Run: pytest tests/test_workflow.py
 """
 
+import re
 from pathlib import Path
 
 import yaml
@@ -352,5 +353,24 @@ def test_the_codex_cli_is_installed_when_either_credential_is_present():
     assert "OPENAI_API_KEY" in install["env"]["HAVE_CODEX"]
 
 
-def test_the_review_step_is_told_where_the_borrowed_credential_is():
-    assert "codex-home" in step("Run the review")["env"]["CODEX_HOME"]
+def codex_home_argument(run_text):
+    """The `--codex-home` value one step passes, unquoted."""
+    match = re.search(r'--codex-home\s+"([^"]+)"', run_text)
+    assert match, f"no --codex-home argument in: {run_text}"
+    return match.group(1)
+
+
+def test_the_review_step_reads_the_directory_the_borrow_step_wrote():
+    # This asserted `"codex-home" in ...` and so would have passed with the
+    # two steps pointing at different directories -- the borrow writing to
+    # $RUNNER_TEMP/codex-home and the review reading somewhere else, which is
+    # silent: the review would simply find no credential and drop the backend.
+    # `$RUNNER_TEMP` and `${{ runner.temp }}` are two spellings of one
+    # directory, so both are named here and the tail must match exactly.
+    borrowed = codex_home_argument(step("Borrow the Codex credential")["run"])
+    returned = codex_home_argument(step("Return the Codex credential")["run"])
+    used = step("Run the review")["env"]["CODEX_HOME"]
+    assert borrowed == "$RUNNER_TEMP/codex-home"
+    assert returned == borrowed
+    assert used == "${{ runner.temp }}/codex-home"
+    assert used.split("}}", 1)[1] == borrowed.split("$RUNNER_TEMP", 1)[1]
