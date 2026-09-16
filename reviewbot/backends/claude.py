@@ -20,8 +20,22 @@ class ClaudeBackend(Backend):
     name = "claude"
 
     def probe(self) -> bool:
-        """Installed and authenticated. A missing credential reads as not installed."""
-        return bool(shutil.which("claude")) and bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
+        """Installed and authenticated, by token or by the credential on disk.
+
+        The CLI needs no environment variable: measured 2026-09-16, `claude -p`
+        answers with CLAUDE_CODE_OAUTH_TOKEN unset, reading
+        ~/.claude/.credentials.json. Demanding the variable reported a working
+        CLI as "not installed", which is why the self-hosted runner could not
+        use the subscription already sitting on it.
+        """
+        if not shutil.which("claude"):
+            return False
+        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            return True
+        config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(
+            os.path.expanduser("~"), ".claude"
+        )
+        return os.path.exists(os.path.join(config, ".credentials.json"))
 
     @staticmethod
     def _cli_schema(schema: dict) -> dict:

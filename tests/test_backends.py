@@ -36,10 +36,34 @@ def test_claude_is_not_live_without_the_binary(policy, bin_dir, claude_env, tmp_
     assert backend.probe() is False
 
 
-def test_claude_is_not_live_without_the_token(policy, bin_dir, monkeypatch, tmp_path):
+def test_claude_is_not_live_without_any_credential(policy, bin_dir, monkeypatch, tmp_path):
+    # An empty CLAUDE_CONFIG_DIR and an empty HOME rule out the on-disk
+    # fallback too. Pointing only at an empty CLAUDE_CONFIG_DIR would not be
+    # enough: the probe would still find a real ~/.claude/.credentials.json
+    # on a machine that has one, the same trap bin_dir's docstring documents
+    # for PATH.
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(empty))
+    monkeypatch.setenv("HOME", str(empty))
     write_script(bin_dir, "claude", claude_script(VALID_JSON))
     assert base.build("claude", policy, str(tmp_path)).probe() is False
+
+
+def test_claude_is_live_on_an_on_disk_credential_with_no_token(
+    policy, bin_dir, monkeypatch, tmp_path
+):
+    # Measured 2026-09-16: with CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY
+    # both unset, `claude -p` answered normally, reading
+    # ~/.claude/.credentials.json. The old probe called that "not installed".
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    config = tmp_path / "claude-config"
+    config.mkdir()
+    (config / ".credentials.json").write_text("{}")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    write_script(bin_dir, "claude", claude_script(VALID_JSON))
+    assert base.build("claude", policy, str(tmp_path)).probe() is True
 
 
 def test_claude_is_live_with_both(policy, bin_dir, claude_env, tmp_path):
