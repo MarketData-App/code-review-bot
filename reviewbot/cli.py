@@ -465,6 +465,13 @@ def credential_checkout(
     Every failure here reports `fetched=false` and exits 0. A job that cannot
     borrow the credential must review with Claude alone, not go red: a missing
     backend is already an ordinary outcome for `backends.run()`.
+
+    The whole body runs under one broad `except Exception` backstop, below the
+    specific `except GitHubError` branches. Nothing here may propagate: a
+    write failure after the lease is taken, a store reply that is valid JSON
+    but not an object, or a transport error that is not a `GitHubError` (a raw
+    `ConnectionError`/`Timeout` from `requests`) must all still release the
+    lease if held, report `fetched=false`, and exit 0.
     """
     import datetime as _dt
     import time as _time
@@ -473,56 +480,81 @@ def credential_checkout(
     from reviewbot import credentials
 
     api = _store_api(store, token)
-    for attempt in range(1, max(1, attempts) + 1):
+    held = False
+    try:
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                if credentials.acquire(api, holder, run_url, _dt.datetime.now(_dt.UTC)):
+                    held = True
+                    break
+                print(f"reviewbot: the credential lease is held, attempt {attempt}/{attempts}")
+            except GitHubError as exc:
+                print(f"reviewbot: cannot reach the credential store: {scrub(str(exc))}")
+                _say_output("fetched", "false")
+                return 0
+            if attempt == attempts:
+                _say_output("fetched", "false")
+                return 0
+            _time.sleep(min(2**attempt, 30))
+
         try:
-            if credentials.acquire(api, holder, run_url, _dt.datetime.now(_dt.UTC)):
-                break
-            print(f"reviewbot: the credential lease is held, attempt {attempt}/{attempts}")
+            text = api.file_at_ref(credentials.ISSUE_PATH, credentials.ISSUE_BRANCH)
         except GitHubError as exc:
-            print(f"reviewbot: cannot reach the credential store: {scrub(str(exc))}")
+            print(f"reviewbot: cannot read the issued credential: {scrub(str(exc))}")
+            credentials.release(api, holder)
             _say_output("fetched", "false")
             return 0
-        if attempt == attempts:
+        if not text:
+            print("reviewbot: the store holds no issued credential")
+            credentials.release(api, holder)
             _say_output("fetched", "false")
             return 0
-        _time.sleep(min(2**attempt, 30))
 
-    try:
-        text = api.file_at_ref(credentials.ISSUE_PATH, credentials.ISSUE_BRANCH)
-    except GitHubError as exc:
-        print(f"reviewbot: cannot read the issued credential: {scrub(str(exc))}")
-        credentials.release(api, holder)
+        # Mask before writing: a later step that echoes the file must not leak
+        # it. `text` may be valid JSON that is not an object (e.g. "5" or
+        # "null"), so guard with isinstance rather than trust `.get` to exist.
+        try:
+            body = json.loads(text)
+            tokens = body.get("tokens") if isinstance(body, dict) else None
+            for value in (tokens or {}).values():
+                if isinstance(value, str) and value != credentials.PLACEHOLDER:
+                    print(f"::add-mask::{value}")
+        except json.JSONDecodeError:
+            pass
+
+        home = Path(codex_home)
+        home.mkdir(parents=True, exist_ok=True)
+        home.chmod(0o700)
+        auth = home / "auth.json"
+        auth.write_text(text)
+        auth.chmod(0o600)
+        _say_output("fetched", "true")
+        return 0
+    except Exception as exc:
+        print(
+            f"reviewbot: credential-checkout failed unexpectedly: "
+            f"{type(exc).__name__}: {scrub(str(exc))}"
+        )
+        if held:
+            try:
+                credentials.release(api, holder)
+            except Exception as release_exc:
+                print(
+                    f"reviewbot: could not free the lease, it will expire: "
+                    f"{type(release_exc).__name__}: {scrub(str(release_exc))}"
+                )
         _say_output("fetched", "false")
         return 0
-    if not text:
-        print("reviewbot: the store holds no issued credential")
-        credentials.release(api, holder)
-        _say_output("fetched", "false")
-        return 0
-
-    # Mask before writing: a later step that echoes the file must not leak it.
-    try:
-        for value in (json.loads(text).get("tokens") or {}).values():
-            if isinstance(value, str) and value != credentials.PLACEHOLDER:
-                print(f"::add-mask::{value}")
-    except json.JSONDecodeError:
-        pass
-
-    home = Path(codex_home)
-    home.mkdir(parents=True, exist_ok=True)
-    home.chmod(0o700)
-    auth = home / "auth.json"
-    auth.write_text(text)
-    auth.chmod(0o600)
-    _say_output("fetched", "true")
-    return 0
 
 
 def credential_checkin(store: str, holder: str, codex_home: str, token: str) -> int:
     """Delete the borrowed credential, then free the lease. Never fails.
 
     In that order, deliberately. The lease expires by itself after its TTL; a
-    credential left behind on a persistent self-hosted runner does not.
+    credential left behind on a persistent self-hosted runner does not, so the
+    delete happens before anything that could fail, including a transport
+    error that is not a `GitHubError` (a raw `ConnectionError`/`Timeout` from
+    `requests`).
     """
     import shutil as _shutil
     from pathlib import Path
@@ -534,6 +566,11 @@ def credential_checkin(store: str, holder: str, codex_home: str, token: str) -> 
         credentials.release(_store_api(store, token), holder)
     except GitHubError as exc:
         print(f"reviewbot: could not free the lease, it will expire: {scrub(str(exc))}")
+    except Exception as exc:
+        print(
+            f"reviewbot: could not free the lease, it will expire: "
+            f"{type(exc).__name__}: {scrub(str(exc))}"
+        )
     return 0
 
 

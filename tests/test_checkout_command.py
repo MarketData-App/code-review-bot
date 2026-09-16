@@ -222,3 +222,141 @@ def test_checkin_deletes_the_credential_even_when_the_store_is_unreachable(tmp_p
         == 0
     )
     assert not home.exists()
+
+
+# --- fix round 1: the "never fail the review" guarantee must not break -----
+
+
+def held_lease_by_our_holder(transport, sha="b3"):
+    """A second lease read, used by the release call that follows an acquire."""
+    transport.add(
+        "GET",
+        f"/repos/{STORE}/contents/codex/lease.json?ref=main",
+        data={
+            "encoding": "base64",
+            "content": base64.b64encode(json.dumps({"holder": "sdk-py#100"}).encode()).decode(),
+            "sha": sha,
+        },
+    )
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+
+
+def test_checkout_survives_an_issued_credential_that_is_not_a_json_object(
+    tmp_path, transport, capsys
+):
+    # json.loads("5") succeeds -- it is valid JSON -- but the result has no
+    # .get. The masking loop must not crash the command on a store reply that
+    # is valid JSON but not an object.
+    free_lease(transport)
+    transport.add(
+        "GET",
+        f"/repos/{STORE}/contents/codex/auth.json?ref=issue",
+        data={"encoding": "base64", "content": base64.b64encode(b"5").decode(), "sha": "b2"},
+    )
+    code = cli.main(
+        [
+            "credential-checkout",
+            "--store",
+            STORE,
+            "--holder",
+            "sdk-py#100",
+            "--run-url",
+            "https://run/1",
+            "--codex-home",
+            str(tmp_path / "codex-home"),
+        ]
+    )
+    assert code == 0
+
+
+def test_checkout_releases_the_lease_when_the_write_fails(tmp_path, transport, capsys):
+    # codex-home already exists as a plain file, so Path.mkdir(exist_ok=True)
+    # raises FileExistsError -- a write failure discovered only after the
+    # lease is already held.
+    free_lease(transport)
+    issue_copy(transport)
+    held_lease_by_our_holder(transport)
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory")
+    code = cli.main(
+        [
+            "credential-checkout",
+            "--store",
+            STORE,
+            "--holder",
+            "sdk-py#100",
+            "--run-url",
+            "https://run/1",
+            "--codex-home",
+            str(blocked),
+        ]
+    )
+    assert code == 0
+    assert "fetched=false" in capsys.readouterr().out
+    releases = [
+        call
+        for call in transport.calls
+        if call["method"] == "PUT" and call["path"] == f"/repos/{STORE}/contents/codex/lease.json"
+    ]
+    assert len(releases) == 2  # one to acquire the lease, one to free it
+
+
+def _raising_transport(method, url, headers, body):
+    raise OSError("network down")
+
+
+def test_checkout_survives_a_raw_transport_error(tmp_path, monkeypatch, capsys):
+    # requests can raise ConnectionError/Timeout/SSLError directly; those are
+    # not GitHubError, and must not escape credential_checkout either.
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_" + "T" * 36)
+    monkeypatch.setattr(
+        cli,
+        "_store_api",
+        lambda repo, token: github.GitHub(
+            repo, token, transport=_raising_transport, sleep=lambda s: None
+        ),
+    )
+    code = cli.main(
+        [
+            "credential-checkout",
+            "--store",
+            STORE,
+            "--holder",
+            "sdk-py#100",
+            "--run-url",
+            "https://run/1",
+            "--codex-home",
+            str(tmp_path / "h"),
+            "--attempts",
+            "1",
+        ]
+    )
+    assert code == 0
+    assert "fetched=false" in capsys.readouterr().out
+
+
+def test_checkin_survives_a_raw_transport_error(tmp_path, monkeypatch):
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "auth.json").write_text("{}")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_" + "T" * 36)
+    monkeypatch.setattr(
+        cli,
+        "_store_api",
+        lambda repo, token: github.GitHub(
+            repo, token, transport=_raising_transport, sleep=lambda s: None
+        ),
+    )
+    code = cli.main(
+        [
+            "credential-checkin",
+            "--store",
+            STORE,
+            "--holder",
+            "sdk-py#100",
+            "--codex-home",
+            str(home),
+        ]
+    )
+    assert code == 0
+    assert not home.exists()
