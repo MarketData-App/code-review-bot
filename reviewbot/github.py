@@ -326,10 +326,19 @@ class GitHub:
         # It is an optional signal: Actions and most modern CI report as check
         # runs. Losing it must never fail the whole review, so an inaccessible
         # endpoint reads as "no opinion" rather than as an error or a pass.
+        # The combined-status endpoint returns `state: "pending"` for a commit
+        # with ZERO statuses, which is not the same thing as a status that has
+        # not reported yet. Measured on sdk-py #108: nine check runs all
+        # `success`, and this endpoint said state=pending with total_count=0.
+        # Every repository here uses check runs only, so treating that as
+        # pending made them all look permanently unfinished -- harmless while
+        # this only flavoured the verdict, and a total block once it gated the
+        # review. An empty status list is NO OPINION.
         try:
-            legacy = (
-                self._request("GET", f"/repos/{self.repo}/commits/{sha}/status").data or {}
-            ).get("state", "pending")
+            reply = self._request("GET", f"/repos/{self.repo}/commits/{sha}/status").data or {}
+            legacy = reply.get("state", "pending")
+            if not (reply.get("statuses") or []):
+                legacy = None
         except GitHubError:
             legacy = None
 
