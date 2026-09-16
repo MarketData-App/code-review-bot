@@ -460,3 +460,13 @@ def test_a_failed_cli_install_does_not_fail_the_review():
     assert len(lines) == 2
     for line in lines:
         assert line.endswith("|| true"), line
+
+
+def test_the_borrow_step_tells_the_bot_which_repository_it_is_for():
+    # Without --repo/--pr the bot cannot read the target's policy, and every
+    # repository would take the shared lease even when its policy never runs
+    # codex -- the default is `backends: [claude, codex]` with `mode: first`,
+    # so Claude runs and Codex does not.
+    run = step("Borrow the Codex credential")["run"]
+    assert "--repo" in run
+    assert "--pr" in run

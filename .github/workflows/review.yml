@@ -290,6 +290,8 @@ jobs:
             --holder "${{ github.repository }}#${{ steps.pr.outputs.number }}#${{ github.run_id }}-${{ github.run_attempt }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --codex-home "$RUNNER_TEMP/codex-home" \
+            --repo "${{ github.repository }}" \
+            --pr "${{ steps.pr.outputs.number }}" \
             || echo "fetched=false" >> "$GITHUB_OUTPUT"
 
       - name: Install the model CLIs

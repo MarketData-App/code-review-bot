@@ -461,8 +461,41 @@ def _say_output(key: str, value: str) -> None:
             handle.write(f"{key}={value}\n")
 
 
+def _will_run_codex(repo: str, pr_number: int, token: str) -> bool:
+    """Does this repository's policy actually list the codex backend?
+
+    The workflow cannot answer this: the policy lives in the target repository,
+    on the pull request's BASE branch, and only the bot reads it. Without the
+    question the borrow step takes the shared lease on every review, including
+    the many that will never run Codex -- the default policy is
+    `backends: [claude, codex]` with `mode: first`, so Claude runs and Codex
+    does not. Those reviews would serialise behind each other for nothing.
+
+    Fails TOWARD borrowing. An unnecessary borrow wastes a lease slot for a few
+    minutes; a missed one silently drops a backend the repository asked for.
+    """
+    from reviewbot import config
+
+    try:
+        api = _store_api(repo, token)
+        pull = api.pull_request(pr_number)
+        base_ref = (pull.get("base") or {}).get("ref") or "HEAD"
+        policy = config.load(api.file_at_ref(POLICY_PATH, base_ref))
+    except (GitHubError, config.PolicyError, KeyError, TypeError) as exc:
+        print(f"reviewbot: could not read the policy, borrowing anyway: {scrub(str(exc))}")
+        return True
+    return "codex" in (policy.get("backends") or [])
+
+
 def credential_checkout(
-    store: str, holder: str, run_url: str, codex_home: str, attempts: int, token: str
+    store: str,
+    holder: str,
+    run_url: str,
+    codex_home: str,
+    attempts: int,
+    token: str,
+    repo: str = "",
+    pr_number: int | None = None,
 ) -> int:
     """Take the lease and write the borrowed credential. Never fails the review.
 
@@ -482,6 +515,14 @@ def credential_checkout(
     from pathlib import Path
 
     from reviewbot import credentials
+
+    # Before anything else, and deliberately outside the lease: a repository
+    # whose policy does not list codex must not hold the shared lease while a
+    # backend it never runs sits idle.
+    if repo and pr_number and not _will_run_codex(repo, pr_number, token):
+        print(f"reviewbot: {repo} does not run the codex backend; not taking the lease")
+        _say_output("fetched", "false")
+        return 0
 
     api = _store_api(store, token)
     held = False
@@ -631,6 +672,15 @@ def main(argv: list[str] | None = None) -> int:
     checkout.add_argument("--run-url", default="", help="the run that holds the lease")
     checkout.add_argument("--codex-home", required=True, help="where to write auth.json")
     checkout.add_argument("--attempts", type=int, default=4, help="lease attempts before giving up")
+    checkout.add_argument(
+        "--repo",
+        dest="target_repo",
+        default="",
+        help="owner/name whose policy decides if codex runs",
+    )
+    checkout.add_argument(
+        "--pr", dest="target_pr", type=int, default=None, help="pull request number, with --repo"
+    )
 
     checkin = sub.add_parser("credential-checkin", help="return the Codex credential")
     checkin.add_argument("--store", required=True, help="owner/name of the credential store")
@@ -647,7 +697,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "credential-checkout":
         return credential_checkout(
-            args.store, args.holder, args.run_url, args.codex_home, args.attempts, token
+            args.store,
+            args.holder,
+            args.run_url,
+            args.codex_home,
+            args.attempts,
+            token,
+            args.target_repo,
+            args.target_pr,
         )
     if args.command == "credential-checkin":
         return credential_checkin(args.store, args.holder, args.codex_home, token)
