@@ -94,39 +94,43 @@ def retry_note(errors: str) -> str:
 
 
 def render_check_results(results: list[dict], budget: int = 12000) -> str:
-    """CI's own words, for the brief. Empty when there is nothing to say.
+    """What CI said: a line per check, and a PATH to its full log.
 
-    Failures come FIRST and keep their text: a red check is the one the
-    reviewer most needs, and a chatty green one must not crowd it out. The
-    budget exists because a coverage report can run to tens of kilobytes and
-    the diff has to fit alongside it.
+    Deliberately not the log text. The reviewer has Read and Grep, the logs are
+    on disk beside the checkout, and a finding that depends on CI output can go
+    and read it. Inlining meant choosing what to trim, and the choice was
+    measurably wrong: on a real 84,870 byte job log the pytest summary sat
+    53,681 bytes from the end, after the coverage upload and the cleanup.
+
+    `budget` still bounds any output GitHub itself gave us -- codecov fills its
+    check with a coverage table, and that is worth showing inline because it is
+    already short.
     """
     if not results:
         return ""
+    # Failures first, though they are the exception rather than the rule: the
+    # bot does not start on a pull request that is not green (`should_skip`
+    # checks `require_ci_green` BEFORE the model runs). A red check reaches here
+    # only when a repository turned that off, a human passed `force`, or the
+    # conclusion is one `ci_state` does not count as failure -- `cancelled`,
+    # `neutral`, `skipped`.
     order = {"failure": 0, "timed_out": 0, "action_required": 0, "cancelled": 1}
     ranked = sorted(results, key=lambda r: order.get(r.get("conclusion", ""), 2))
     lines: list[str] = []
     used = 0
-    truncated = False
     for item in ranked:
         head = f"- **{item.get('name', '')}** — {item.get('conclusion', '') or 'no conclusion'}"
-        body = "\n".join(x for x in (item.get("summary", ""), item.get("text", "")) if x).strip()
-        block = head + (f"\n\n```\n{body}\n```" if body else "")
-        if used + len(block) > budget:
-            room = max(0, budget - used - len(head) - 20)
-            if room > 200:
-                block = head + f"\n\n```\n{body[:room]}\n… truncated\n```"
-            else:
-                block = head + "  (output truncated)"
-            truncated = True
-            lines.append(block)
-            break
+        path = item.get("log_path") or ""
+        if path:
+            size = item.get("log_bytes") or 0
+            head += f"  ·  full log: `{path}` ({size:,} bytes)"
+        inline = "\n".join(x for x in (item.get("summary", ""), item.get("text", "")) if x).strip()
+        block = head
+        if inline and used + len(inline) < budget:
+            block += f"\n\n```\n{inline}\n```"
+            used += len(inline)
         lines.append(block)
-        used += len(block)
-    out = "\n".join(lines)
-    if truncated and "truncated" not in out:
-        out += "\n\n(output truncated)"
-    return out
+    return "\n".join(lines)
 
 
 def compose(pr: PRFacts, policy: dict, review_md: str, checkout: str) -> str:
@@ -157,9 +161,16 @@ def compose(pr: PRFacts, policy: dict, review_md: str, checkout: str) -> str:
         if checks
         else "No check runs reported on this commit. Do not assume the tests pass.",
         "",
-        "Read the results above rather than guessing at them, and rather than "
-        "running anything: they are the real output from this commit's CI. A "
-        "check with no output means CI reported none, not that nothing ran.",
+        "Every check below has already passed -- this review does not start "
+        "until CI is green, so a failing test never reaches you. Use the logs "
+        "for EVIDENCE, not triage: the test counts, the coverage table, what "
+        "was actually exercised. "
+        "The `full log` paths are "
+        "files this bot wrote for you under the checkout -- they are NOT part "
+        "of the pull request's diff. Grep or read one when a finding depends on "
+        "what CI actually printed: the test counts, a coverage table, a "
+        "traceback. Do not run the tests yourself, and do not guess at results "
+        "you can read.",
         "",
         "## Changed files",
         "",

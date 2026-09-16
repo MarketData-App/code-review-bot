@@ -15,7 +15,7 @@ import time as _time
 import traceback
 
 from reviewbot import brief as brief_mod
-from reviewbot import config, findings, merge, render
+from reviewbot import config, facts, findings, merge, render
 from reviewbot import policy as policy_mod
 from reviewbot import result as result_mod
 from reviewbot.backends import base as backends
@@ -296,6 +296,11 @@ def run(
     if skip:
         print(f"reviewbot: skipped, {skip}")
         return 0
+
+    # Write CI's logs where the reviewer can grep them. After should_skip, so a
+    # pull request that is not green never gets this far and never costs the
+    # requests: by the time we are here every check has already passed.
+    pr = dataclasses.replace(pr, check_results=facts.write_check_logs(pr.check_results, checkout))
 
     try:
         text = brief_mod.compose(pr, policy, review_md, checkout)

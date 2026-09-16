@@ -6,6 +6,7 @@ The transport is injectable so the tests never open a socket.
 """
 
 import json
+import re
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -233,6 +234,34 @@ class GitHub:
         """The repository object. Read for `allow_auto_merge` before arming."""
         return self._request("GET", f"/repos/{self.repo}").data or {}
 
+    _TIMESTAMP = re.compile(r"^\S+Z\s")
+
+    def job_log(self, job_id: int) -> str:
+        """An Actions job log in FULL, timestamps stripped, or "".
+
+        Nothing is trimmed and nothing is extracted. An earlier version tried
+        to pick out "the interesting lines" and a measurement showed why that
+        is a losing game: on a real 84,870 byte sdk-py log, `passed in` sat
+        53,681 bytes from the END, because coverage upload, codecov and
+        post-action cleanup all run after the tests. Guessing at signals means
+        guessing wrong for whichever CI nobody tested against.
+
+        So the whole log is written to a file and the reviewer greps it if it
+        wants to. Reading costs the model tokens only for what it actually
+        reads; guessing costs correctness.
+
+        Needs the App's `actions: read`, granted and accepted 2026-09-16.
+        Losing a log degrades a review; it must never fail one.
+        """
+        try:
+            reply = self._request("GET", f"/repos/{self.repo}/actions/jobs/{job_id}/logs")
+        except GitHubError:
+            return ""
+        raw = reply.text or ""
+        if not raw:
+            return ""
+        return "\n".join(self._TIMESTAMP.sub("", line) for line in raw.splitlines())
+
     def check_results(self, sha: str, exclude_check_name: str) -> list[dict]:
         """Every other check run on `sha`, with whatever output it carries.
 
@@ -265,12 +294,22 @@ class GitHub:
             if item.get("name") == exclude_check_name:
                 continue
             output = item.get("output") or {}
+            summary = output.get("summary") or ""
+            text = output.get("text") or ""
+            # A check run created by Actions carries NO output -- measured, both
+            # fields empty on every `test (3.x)` and `Lint` check. Its log does.
+            # A check that already told us something (codecov) is left alone:
+            # re-reading it would spend a request, and it is not an Actions job.
+            log = ""
+            if not summary and not text and item.get("id"):
+                log = self.job_log(int(item["id"]))
             out.append(
                 {
                     "name": item.get("name") or "",
                     "conclusion": item.get("conclusion") or item.get("status") or "",
-                    "summary": output.get("summary") or "",
-                    "text": output.get("text") or "",
+                    "summary": summary,
+                    "text": text,
+                    "log": log,
                 }
             )
         return out

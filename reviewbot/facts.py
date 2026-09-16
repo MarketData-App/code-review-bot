@@ -7,6 +7,7 @@ token.
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 _FILE_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
 
@@ -86,6 +87,44 @@ def cap_diff(
         kept.append(text)
         used += size
     return "".join(kept), unseen
+
+
+CI_DIR = ".reviewbot-ci"
+
+
+def write_check_logs(results: list[dict], checkout: str) -> list[dict]:
+    """Write each check's full log to a file the reviewer can grep.
+
+    The model gets a PATH, not a wall of text. It has Read, Grep and Glob, so it
+    can go looking when a finding depends on what CI said, and pays tokens only
+    for what it actually reads. Trimming or extracting on its behalf meant
+    guessing which lines matter, and a measurement showed the guess was wrong:
+    on a real 84,870 byte job log the pytest summary sat 53,681 bytes from the
+    END, after coverage upload, codecov and post-action cleanup.
+
+    The files live under a directory named for this bot, INSIDE the checkout,
+    because that is the one tree both backends can read. The brief says plainly
+    that they are bot-provided and not part of the diff.
+    """
+    out: list[dict] = []
+    base = Path(checkout) / CI_DIR
+    for item in results:
+        entry = {k: v for k, v in item.items() if k != "log"}
+        entry["log_path"] = ""
+        log = item.get("log") or ""
+        if log:
+            slug = re.sub(r"[^A-Za-z0-9._-]+", "-", item.get("name", "check")).strip("-").lower()
+            try:
+                base.mkdir(parents=True, exist_ok=True)
+                target = base / f"{slug or 'check'}.log"
+                target.write_text(log, encoding="utf-8")
+                entry["log_path"] = f"{CI_DIR}/{target.name}"
+                entry["log_bytes"] = len(log)
+            except OSError:
+                # A log we cannot write is a log the reviewer does without.
+                entry["log_path"] = ""
+        out.append(entry)
+    return out
 
 
 def _translate(pattern: str) -> re.Pattern:
