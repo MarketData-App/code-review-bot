@@ -11,9 +11,9 @@ import datetime
 import json
 
 import pytest
-from conftest import FakeTransport
 
 from reviewbot import credentials, github
+from tests.conftest import FakeTransport
 
 
 def b64(raw: bytes) -> str:
@@ -111,6 +111,18 @@ def lease_body(transport, holder, expires_at, sha="blob111"):
     )
 
 
+def corrupt_lease_body(transport, sha="blob111"):
+    transport.add(
+        "GET",
+        f"/repos/{STORE}/contents/codex/lease.json?ref=main",
+        data={
+            "encoding": "base64",
+            "content": base64.b64encode(b"not json at all").decode(),
+            "sha": sha,
+        },
+    )
+
+
 def test_a_free_lease_is_acquired(store):
     api, transport = store
     lease_body(transport, None, None)
@@ -145,6 +157,15 @@ def test_a_missing_lease_file_is_created(store):
     transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
     assert credentials.acquire(api, "sdk-py#100", "https://run/1", NOW) is True
     assert "sha" not in transport.calls[-1]["body"]
+
+
+def test_a_corrupt_lease_body_is_treated_as_free(store):
+    # A lease nobody can parse must not wedge every review forever, so
+    # `_read_lease` treats it as free rather than raising or refusing.
+    api, transport = store
+    corrupt_lease_body(transport)
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    assert credentials.acquire(api, "sdk-py#100", "https://run/1", NOW) is True
 
 
 def test_losing_the_compare_and_swap_is_not_acquiring(store):
