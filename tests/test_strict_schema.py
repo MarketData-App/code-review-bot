@@ -119,9 +119,26 @@ def test_a_review_that_does_use_the_optional_fields_still_validates():
     assert errors == [], [e.message for e in errors]
 
 
-def test_a_null_decision_reads_as_no_decision():
-    """Consumers use truthiness, so null must behave exactly like absent."""
-    from reviewbot import render
+def test_render_survives_the_null_decision_the_strict_schema_permits():
+    """The renderer must handle the null the schema change introduced.
 
-    assert bool({"decision": None}.get("decision")) is False
-    assert render is not None
+    An earlier version of this test asserted `bool({"decision": None})` is
+    False -- a fact about Python dicts, not about this repository -- and that
+    an import succeeded. It would have passed while `render` crashed on the
+    very value the schema now allows. This one renders both shapes and checks
+    the marker the rest of the bot reads.
+    """
+    from reviewbot import markers, render
+    from tests.test_render import parts as _parts
+
+    # `parts` is a pytest fixture in another module, so it is not injectable
+    # here; `__wrapped__` is the undecorated function underneath it.
+    result, meta, policy, decisions, since, waived = _parts.__wrapped__()
+
+    result["decision"] = None
+    body = render.render(result, meta, policy, decisions, since, waived)
+    assert markers.parse(body)["decision_open"] is False
+
+    result["decision"] = {"question": "Which?", "options": ["a", "b"], "recommendation": "a."}
+    body = render.render(result, meta, policy, decisions, since, waived)
+    assert markers.parse(body)["decision_open"] is True

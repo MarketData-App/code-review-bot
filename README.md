@@ -41,9 +41,19 @@ jobs:
 Private repositories add `with: { runs-on: '["self-hosted", "marketdata-docker"]' }`.
 
 The Codex backend needs no secret: the job borrows a short-lived credential
-from a private store. **That store needs a keeper publishing into it**; until
-one does, `credential-checkout` reports `fetched=false` and reviews run exactly
-as they did before. Pass `credential-store: ''` to turn that off.
+from a private store. Three things stop it borrowing, and the third surprises
+people:
+
+1. `credential-store: ''` in the caller.
+2. An `OPENAI_API_KEY` secret on the repository, which takes precedence.
+3. **A policy that never reaches Codex.** The shipped default is
+   `backends: [claude, codex]` with `mode: first`, which runs Claude and never
+   invokes Codex -- so the job declines the shared lease rather than holding
+   one plan's credential for a backend that will not run. Put `codex` first, or
+   use `mode: all`.
+
+That store also needs a keeper publishing into it; until one does,
+`credential-checkout` reports `fetched=false` and reviews run as before. Pass `credential-store: ''` to turn that off.
 
 A repository that prefers an API key sets `OPENAI_API_KEY`, and that key takes
 precedence: the job skips the borrow step entirely, so no borrowed credential

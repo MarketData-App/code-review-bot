@@ -48,7 +48,16 @@ def free_lease(transport):
     transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
 
 
-def issue_copy(transport):
+def issue_copy(transport, expires_at="2099-01-01T00:00:00+00:00"):
+    transport.add(
+        "GET",
+        f"/repos/{STORE}/contents/codex/meta.json?ref=issue",
+        data={
+            "encoding": "base64",
+            "content": base64.b64encode(json.dumps({"expires_at": expires_at}).encode()).decode(),
+            "sha": "m1",
+        },
+    )
     transport.add(
         "GET",
         f"/repos/{STORE}/contents/codex/auth.json?ref=issue",
@@ -749,3 +758,36 @@ def test_the_wait_never_outruns_the_job_budget():
     for cap in (5, 15, 30, 40):
         ttl, wait = cli._lease_minutes({"timeout_minutes": cap})
         assert wait + 2 * cap <= cli.JOB_BUDGET_MINUTES, f"cap={cap} ttl={ttl} wait={wait}"
+
+
+def test_an_expired_issued_credential_is_not_borrowed(tmp_path, transport, capsys):
+    """An expired copy authenticates nothing.
+
+    Borrowing it spends the org-wide lease and a whole review slot to arrive at
+    a certain failure, so `meta.json` is read before the credential is written.
+    """
+    free_lease(transport)
+    issue_copy(transport, expires_at="2020-01-01T00:00:00+00:00")
+    home = tmp_path / "codex-home"
+    assert (
+        cli.main(
+            [
+                "credential-checkout",
+                "--store",
+                STORE,
+                "--holder",
+                "me#1",
+                "--run-url",
+                "u",
+                "--codex-home",
+                str(home),
+                "--wait-minutes",
+                "0",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "expired" in out
+    assert "fetched=false" in out
+    assert not home.exists()
