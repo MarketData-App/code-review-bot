@@ -141,7 +141,11 @@ A review that cannot borrow runs with Claude alone.
 - **Labels.** The bot creates none. Create these four so they carry a colour:
   `review: ready`, `review: needs changes`, `review: needs proof`,
   `review: decision needed`. A maintainer applies `review: proof waived` to
-  lift the proof gate; the bot honours it and never sets or clears it.
+  lift the proof gate where a repository has enabled it; the bot honours the
+  label and never sets or clears it. **The gate is off by default**: missing
+  runtime evidence is reported and asked for, not enforced. Turn it on per
+  repository with `proof: {required: true}`, and pair it with `proof.paths` so
+  it stays a floor under the model's judgement rather than a blanket.
 - **Auto-merge.** Only needed when `policy.auto_merge.enabled` is true. Turn
   on **Allow auto-merge** in the repository settings, and add a branch rule
   that requires the `Code review` check and the repository's CI.
