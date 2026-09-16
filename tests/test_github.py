@@ -674,3 +674,45 @@ def test_put_file_reads_a_409_as_lost_the_race_not_as_an_error(api, transport):
         text="does not match",
     )
     assert api.put_file("codex/lease.json", "{}", "take the lease", "main", "stale") is False
+
+
+# --- the combined-status endpoint lies when it is empty ---------------------
+
+
+def test_green_check_runs_are_success_even_though_legacy_status_says_pending(api, transport):
+    """GitHub returns `state: pending` for a commit with ZERO statuses.
+
+    Measured on sdk-py PR #108: nine check runs all `success`, and
+    GET /commits/{sha}/status returned state=pending, total_count=0. A
+    repository that uses check runs only -- which is every repository here --
+    therefore looked permanently unfinished.
+
+    That was cosmetic while ci_state only flavoured the verdict. Once it gated
+    the review, it meant the bot skipped every pull request forever.
+    """
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
+        data={"check_runs": [{"name": "test", "status": "completed", "conclusion": "success"}]},
+    )
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/status",
+        data={"state": "pending", "total_count": 0, "statuses": []},
+    )
+    assert api.ci_state("abc", "Code review") == "success"
+
+
+def test_a_real_pending_legacy_status_still_counts(api, transport):
+    # A status that genuinely has not reported must still hold the review back.
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
+        data={"check_runs": [{"name": "test", "status": "completed", "conclusion": "success"}]},
+    )
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/status",
+        data={"state": "pending", "total_count": 1, "statuses": [{"state": "pending"}]},
+    )
+    assert api.ci_state("abc", "Code review") == "pending"
