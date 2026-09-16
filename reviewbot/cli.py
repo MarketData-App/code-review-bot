@@ -709,6 +709,51 @@ def credential_checkout(
         return 0
 
 
+def credential_claude(store: str, token: str) -> int:
+    """Put the shared Claude token in the job's environment. Never fails.
+
+    It used to live in six places -- an org secret plus five `sdk-*` repository
+    secrets -- so rotating it meant six edits and any one missed failed silently
+    later. An org secret cannot reach those repositories at all: they are on the
+    MarketDataApp USER account, and an org secret only reaches repos in the org.
+    Nor can a secret be read back; `GET /orgs/.../secrets/...` returns no
+    `value`. So the token lives as a file in the private store and is read with
+    the organisation App installation token, exactly like the Codex credential.
+
+    A repository that already sets the secret itself keeps it: that is the
+    escape hatch for one that must not use the shared plan.
+    """
+    from reviewbot import credentials
+
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        print("reviewbot: CLAUDE_CODE_OAUTH_TOKEN is already set for this job; leaving it alone")
+        _say_output("fetched", "false")
+        return 0
+    try:
+        text = _store_api(store, token).file_at_ref(
+            credentials.CLAUDE_PATH, credentials.ISSUE_BRANCH
+        )
+    except Exception as exc:  # noqa: BLE001 - never fail the review over a fetch
+        print(
+            f"reviewbot: could not read the shared Claude token ({type(exc).__name__}: {scrub(str(exc))})"
+        )
+        _say_output("fetched", "false")
+        return 0
+    value = (text or "").strip()
+    if not value:
+        print("reviewbot: the store holds no shared Claude token")
+        _say_output("fetched", "false")
+        return 0
+    # Mask BEFORE exporting, so nothing that echoes the environment leaks it.
+    print(f"::add-mask::{value}")
+    out_path = os.environ.get("GITHUB_ENV")
+    if out_path:
+        with open(out_path, "a") as handle:
+            handle.write(f"CLAUDE_CODE_OAUTH_TOKEN={value}\n")
+    _say_output("fetched", "true")
+    return 0
+
+
 def credential_checkin(store: str, holder: str, codex_home: str, token: str) -> int:
     """Delete the borrowed credential, then free the lease. Never fails.
 
@@ -818,6 +863,11 @@ def main(argv: list[str] | None = None) -> int:
         "--pr", dest="target_pr", type=int, default=None, help="pull request number, with --repo"
     )
 
+    claude = sub.add_parser(
+        "credential-claude", help="put the shared Claude token in the job environment"
+    )
+    claude.add_argument("--store", required=True, help="owner/name of the credential store")
+
     checkin = sub.add_parser("credential-checkin", help="return the Codex credential")
     checkin.add_argument("--store", required=True, help="owner/name of the credential store")
     checkin.add_argument("--holder", required=True, help="who took the lease")
@@ -844,6 +894,8 @@ def main(argv: list[str] | None = None) -> int:
             args.target_pr,
             os.environ.get("REVIEWBOT_TARGET_TOKEN", ""),
         )
+    if args.command == "credential-claude":
+        return credential_claude(args.store, token)
     if args.command == "credential-checkin":
         return credential_checkin(args.store, args.holder, args.codex_home, token)
 

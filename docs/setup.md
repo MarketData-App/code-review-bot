@@ -52,7 +52,7 @@ one fewer value to copy.
 | Secret name | Value | Where |
 |---|---|---|
 | `CODE_REVIEW_APP_PRIVATE_KEY` | The whole `.pem` file, header and footer included | The same two places |
-| `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` | The same two places |
+| `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token`. **Optional now**: the shared copy in the credential store is used when a repository does not set it. See "3b. One Claude token, not six" | Only a repository that must NOT use the shared plan |
 | `OPENAI_API_KEY` | Optional. An API key for the Codex backend. Setting it turns borrowing off for that repository; a repository with no key borrows a credential instead. See "The Codex credential" below | The same two places |
 
 **Why the MarketDataApp repositories need their own copies.** An organisation
@@ -120,6 +120,43 @@ A credential the job cannot BORROW never fails a review. Every failure the borro
 can name exits 0 and reports `fetched=false`; the step also carries a shell
 fallback for the failures it cannot name, such as an empty organisation token.
 A review that cannot borrow runs with Claude alone.
+
+## 3b. One Claude token, not six
+
+The token used to live in an organisation secret plus one repository secret per
+`sdk-*` repo -- six places, so rotating it meant six edits and any one missed
+failed silently later.
+
+An organisation secret cannot fix that: the `sdk-*` repositories are on the
+**MarketDataApp user account**, and an organisation secret only reaches
+repositories in the organisation. Nor can a secret's value be read back --
+`GET /orgs/{org}/actions/secrets/{name}` returns `created_at`, `name`,
+`visibility` and no `value`.
+
+So the token lives as a FILE in the same private store as the Codex credential,
+at `claude/token` on the `issue` branch, and the review job reads it with the
+organisation App installation token -- the same token it already mints for the
+membership check. No new secret, no new permission.
+
+Rotating it is one write:
+
+```bash
+claude setup-token            # copy what it prints
+# write it to claude/token on the store's issue branch
+```
+
+Unlike the Codex credential it is **not leased**: a subscription OAuth token is
+a static bearer token and concurrent use is normal, which is exactly how the
+shared organisation secret already worked. Only a refresh token needs one
+holder at a time.
+
+**A repository that sets `CLAUDE_CODE_OAUTH_TOKEN` itself keeps it.** That is
+the escape hatch for one that must not draw on the shared plan.
+
+What you accept: the token is no longer masked automatically by GitHub, so the
+fetch step masks it explicitly with `::add-mask::` before exporting it, and read
+access becomes "can read the store repository" rather than "can edit repository
+settings".
 
 ## 4. Turn it on for a repository
 

@@ -25,6 +25,12 @@ ISSUE_PATH = "codex/auth.json"
 META_PATH = "codex/meta.json"
 LEASE_PATH = "codex/lease.json"
 
+# The Claude subscription token, beside the Codex credential in the same store.
+# NOT leased: `CLAUDE_CODE_OAUTH_TOKEN` is a static bearer token and concurrent
+# use is normal -- which is how the shared org secret already works. Only the
+# Codex refresh token needs one holder at a time.
+CLAUDE_PATH = "claude/token"
+
 ISSUE_BRANCH = "issue"
 LEASE_BRANCH = "main"
 

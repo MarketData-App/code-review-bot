@@ -294,6 +294,24 @@ jobs:
       # review. The command writes `fetched=` itself on every path that exits
       # 0, so the fallback runs only when nothing was written, and the value
       # the later steps read is never doubled or stale.
+      # The Claude token, from the SAME store as the Codex credential, so
+      # rotating it is one write instead of six. It used to live in an org
+      # secret plus five `sdk-*` repository secrets, and an org secret cannot
+      # reach those repos anyway -- they are on the MarketDataApp user account.
+      # A repository that sets the secret itself keeps it.
+      - name: Fetch the shared Claude token
+        id: claude
+        if: >
+          steps.gate.outputs.trusted == 'true' &&
+          inputs.credential-store != ''
+        env:
+          GITHUB_TOKEN: ${{ steps.org-token.outputs.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          uv run --project bot reviewbot credential-claude \
+            --store "${{ inputs.credential-store }}" \
+            || echo "fetched=false" >> "$GITHUB_OUTPUT"
+
       - name: Borrow the Codex credential
         id: codex
         if: >
@@ -322,7 +340,7 @@ jobs:
       - name: Install the model CLIs
         if: steps.gate.outputs.trusted == 'true'
         env:
-          HAVE_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAVE_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' || steps.claude.outputs.fetched == 'true' }}
           HAVE_CODEX: ${{ steps.codex.outputs.fetched == 'true' || secrets.OPENAI_API_KEY != '' }}
         run: |
           set -eu

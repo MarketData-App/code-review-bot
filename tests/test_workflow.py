@@ -501,3 +501,18 @@ def test_the_caller_template_warns_about_the_ci_gate_and_automatic_triggers():
     text = (ROOT / "docs/caller-workflow.yml").read_text()
     assert "CI has not finished" in text
     assert "workflow_run" in text
+
+
+def test_the_shared_claude_token_is_fetched_after_the_gate():
+    names = [(s.get("name") or "") for s in steps()]
+    gate = next(i for i, n in enumerate(names) if "Refuse a pull request" in n)
+    fetch = next(i for i, n in enumerate(names) if "Fetch the shared Claude token" in n)
+    assert gate < fetch
+
+
+def test_claude_is_installed_when_the_token_comes_from_the_store():
+    # Without this the token moves to the store and the CLI is never installed,
+    # so the backend silently disappears.
+    have = step("Install the model CLIs")["env"]["HAVE_CLAUDE"]
+    assert "secrets.CLAUDE_CODE_OAUTH_TOKEN" in have
+    assert "steps.claude.outputs.fetched" in have
