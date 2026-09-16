@@ -11,6 +11,7 @@ import dataclasses
 import json
 import os
 import sys
+import time as _time
 import traceback
 
 from reviewbot import brief as brief_mod
@@ -470,8 +471,8 @@ def _will_run_codex(repo: str, pr_number: int, token: str) -> bool:
     Codex is built, probed and never invoked. A guard that asked only "is codex
     listed" returned True for every repository on the defaults, and each would
     take the single org-wide lease for a whole review while running no Codex --
-    starving the repositories that genuinely use it, whose 4 attempts back off
-    for about fourteen seconds against a twenty minute TTL.
+    starving the repositories that genuinely use it, which now WAIT for the
+    lease rather than giving up on it.
 
     The one case this cannot see is liveness: under `mode: first` an earlier
     backend with no credential would fall through to Codex. Deciding that here
@@ -509,7 +510,8 @@ def credential_checkout(
     holder: str,
     run_url: str,
     codex_home: str,
-    attempts: int,
+    wait_minutes: float,
+    poll_seconds: float,
     token: str,
     repo: str = "",
     pr_number: int | None = None,
@@ -529,7 +531,6 @@ def credential_checkout(
     lease if held, report `fetched=false`, and exit 0.
     """
     import datetime as _dt
-    import time as _time
     from pathlib import Path
 
     from reviewbot import credentials
@@ -543,20 +544,41 @@ def credential_checkout(
             print(f"reviewbot: {repo} will not reach the codex backend; not taking the lease")
             _say_output("fetched", "false")
             return 0
-        for attempt in range(1, max(1, attempts) + 1):
+        # WAIT for the credential rather than giving up on it. One plan is
+        # shared by every repository, so a review that arrives while another
+        # holds the lease must queue, not silently drop the backend -- on a
+        # codex-only repository giving up means no review at all.
+        #
+        # The wait is bounded by the lease's own TTL, not by a guess: a holder
+        # that died without checking in releases it when the TTL expires, so
+        # waiting longer than one TTL plus a margin can only be waiting on a
+        # holder that is genuinely working.
+        deadline = _dt.datetime.now(_dt.UTC) + _dt.timedelta(minutes=max(0.0, wait_minutes))
+        waited = 0
+        while True:
             try:
                 if credentials.acquire(api, holder, run_url, _dt.datetime.now(_dt.UTC)):
                     held = True
+                    if waited:
+                        print(f"reviewbot: took the credential lease after {waited}s")
                     break
-                print(f"reviewbot: the credential lease is held, attempt {attempt}/{attempts}")
             except GitHubError as exc:
                 print(f"reviewbot: cannot reach the credential store: {scrub(str(exc))}")
                 _say_output("fetched", "false")
                 return 0
-            if attempt == attempts:
+            now = _dt.datetime.now(_dt.UTC)
+            if now >= deadline:
+                print(
+                    f"reviewbot: the credential lease was still held after "
+                    f"{wait_minutes:g} minutes; giving up"
+                )
                 _say_output("fetched", "false")
                 return 0
-            _time.sleep(min(2**attempt, 30))
+            left = (deadline - now).total_seconds()
+            nap = min(poll_seconds, max(1.0, left))
+            print(f"reviewbot: the credential lease is held; waiting {nap:.0f}s ({left:.0f}s left)")
+            _time.sleep(nap)
+            waited += int(nap)
 
         try:
             text = api.file_at_ref(credentials.ISSUE_PATH, credentials.ISSUE_BRANCH)
@@ -687,7 +709,20 @@ def main(argv: list[str] | None = None) -> int:
     checkout.add_argument("--holder", required=True, help="who is taking the lease")
     checkout.add_argument("--run-url", default="", help="the run that holds the lease")
     checkout.add_argument("--codex-home", required=True, help="where to write auth.json")
-    checkout.add_argument("--attempts", type=int, default=4, help="lease attempts before giving up")
+    checkout.add_argument(
+        "--wait-minutes",
+        type=float,
+        default=25.0,
+        help="how long to WAIT for the shared lease before giving up. The default "
+        "exceeds the 20 minute lease TTL, so a holder that died without checking "
+        "in cannot make this give up early.",
+    )
+    checkout.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=20.0,
+        help="how often to retry the lease while waiting",
+    )
     checkout.add_argument(
         "--repo",
         dest="target_repo",
@@ -717,7 +752,8 @@ def main(argv: list[str] | None = None) -> int:
             args.holder,
             args.run_url,
             args.codex_home,
-            args.attempts,
+            args.wait_minutes,
+            args.poll_seconds,
             token,
             args.target_repo,
             args.target_pr,

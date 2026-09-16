@@ -126,6 +126,13 @@ jobs:
     concurrency:
       group: code-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
       cancel-in-progress: true
+    # Must exceed the credential wait plus the review itself. The borrow step
+    # WAITS up to 25 minutes for the shared lease (one plan serves every
+    # repository) and `timeout_minutes` caps the model at 15, so 60 leaves
+    # room without letting a stuck job sit on the self-hosted runner all day.
+    # GitHub's own default here is 360 minutes, which is far too long for a
+    # runner that takes one job at a time.
+    timeout-minutes: 60
     steps:
       # If this job is ever skipped unexpectedly, the `if:` above evaluated
       # false and no step ran at all. This line is what tells you whether the
