@@ -477,3 +477,11 @@ def test_the_job_timeout_exceeds_the_credential_wait_plus_the_review():
     # and one backend can take 2 x timeout_minutes = 30, so a job limit below
     # 70 would kill a review that was only ever queueing politely.
     assert REVIEW["jobs"]["review"]["timeout-minutes"] >= 70
+
+
+def test_the_job_budget_the_cli_assumes_matches_the_workflow():
+    # The borrow step sizes its wait against the job's budget. If these drift,
+    # a job can be killed while politely queueing and it looks like a failure.
+    from reviewbot import cli
+
+    assert REVIEW["jobs"]["review"]["timeout-minutes"] == cli.JOB_BUDGET_MINUTES

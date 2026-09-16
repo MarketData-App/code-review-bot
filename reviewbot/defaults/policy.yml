@@ -2,6 +2,13 @@
 # .github/code-review/policy.yml on its base branch. Nested maps merge key by
 # key; lists replace whole.
 
+# PRIORITY ORDER, and it decides more than which model answers. `mode: first`
+# runs only the first LIVE backend, so with this default Claude reviews and
+# Codex is built, probed and never invoked. `credential-checkout` knows that
+# and declines the shared credential lease for any repository in this shape --
+# holding one plan's lease for a backend that never runs would starve the
+# repositories that do use it. A repository that wants Codex must put it first,
+# or choose `mode: all`.
 backends: [claude, codex]      # priority order; a missing credential drops one
 mode: first                    # first | fallback | all
 require_agreement: false       # all mode: single-backend findings do not block

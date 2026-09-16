@@ -295,9 +295,16 @@ with no lock service.
 
 The loser retries with backoff for a bounded time.
 
-**TTL is 20 minutes.** The longest review measured took 5m46s, so 20 minutes
-is over three times the observed worst case and still short enough that a
-killed job does not block the next review for long.
+**TTL is derived, not chosen.** It was 20 minutes, picked against an observed
+5m46s review -- and that was wrong, as this bot pointed out when reviewing this
+design's own pull request: `Backend.review` is `for attempt in (1, 2)` around a
+call bounded by `timeout_minutes`, so ONE backend can legitimately run for
+twice that, 30 minutes on the shipped default. A TTL shorter than the work it
+protects is worse than no TTL, because it expires under a job that is still
+working. So `cli._lease_minutes` computes `ttl = 2 * timeout_minutes + 5` and a
+wait longer still, and `tests/test_checkout_command.py` pins the ORDERING --
+ttl outlasts the worst-case review, wait outlasts the ttl -- rather than the
+numbers.
 
 **Check-in.** A final step conditioned on
 `always() && steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''`

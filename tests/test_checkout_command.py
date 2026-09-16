@@ -710,11 +710,24 @@ def test_the_ttl_outlasts_the_worst_case_review_and_the_wait_outlasts_the_ttl():
     credential to a second one. And a wait shorter than the TTL gives up just
     before a dead holder's lease would have freed itself.
     """
-    for cap in (5, 15, 30):
+    for cap in (5, 15):
         ttl, wait = cli._lease_minutes({"timeout_minutes": cap})
         worst_case_review = 2 * cap
         assert ttl > worst_case_review, f"ttl {ttl} must outlast a {worst_case_review}m review"
         assert wait > ttl, f"wait {wait} must outlast the ttl {ttl}"
+
+
+def test_a_large_timeout_sacrifices_the_wait_rather_than_the_job():
+    """Above cap ~20 the two goals cannot both hold in a 90 minute job.
+
+    ttl > 2*cap and wait > ttl and wait + 2*cap + overhead <= budget together
+    require cap < 20. Past that, fitting inside the job wins: a wait the runner
+    kills mid-queue looks like a failed review, whereas a wait shorter than the
+    TTL only risks giving up while a DEAD holder's lease is still ticking.
+    """
+    ttl, wait = cli._lease_minutes({"timeout_minutes": 30})
+    assert wait < ttl
+    assert wait + 2 * 30 <= cli.JOB_BUDGET_MINUTES
 
 
 def test_an_unreadable_policy_still_sizes_the_lease_from_the_shipped_default():
@@ -728,3 +741,11 @@ def test_fallback_mode_with_codex_second_does_not_borrow():
     # the repositories that reach Codex on every run.
     assert cli._will_run_codex({"backends": ["claude", "codex"], "mode": "fallback"}) is False
     assert cli._will_run_codex({"backends": ["codex", "claude"], "mode": "fallback"}) is True
+
+
+def test_the_wait_never_outruns_the_job_budget():
+    # A large timeout_minutes would otherwise size a wait the runner kills
+    # mid-queue. wait + worst-case review must fit inside the job's budget.
+    for cap in (5, 15, 30, 40):
+        ttl, wait = cli._lease_minutes({"timeout_minutes": cap})
+        assert wait + 2 * cap <= cli.JOB_BUDGET_MINUTES, f"cap={cap} ttl={ttl} wait={wait}"
