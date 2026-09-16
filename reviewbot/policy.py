@@ -59,7 +59,7 @@ def is_trusted(author: str, association: str, policy: dict) -> bool:
     return (association or "").upper() in (policy["trusted_associations"] or [])
 
 
-def should_skip(pr: PRFacts, policy: dict) -> str | None:
+def should_skip(pr: PRFacts, policy: dict, force: bool = False) -> str | None:
     """A reason to write nothing at all, or None to review.
 
     Trust is NOT decided here. It needs an API call that this module must not
@@ -81,6 +81,32 @@ def should_skip(pr: PRFacts, policy: dict) -> str | None:
         return "the pull request changes no files"
     if all(matches_any(path, policy["ignore_paths"]) for path in pr.paths):
         return "every changed file matches ignore_paths"
+    # A commit reviewed once does not need reviewing again. `same_sha` in
+    # cli.run already noticed this, but only to reuse the revision NUMBER --
+    # the model still ran, spent tokens and rewrote the same comment. Harmless
+    # while the only trigger was a manual dispatch; not harmless once
+    # `pull_request_target` is armed, because its `edited` type fires on a
+    # title or description tweak at an unchanged commit.
+    #
+    # Two things still force a review: asking for one, and `force`. Asking
+    # matters most for `waive` -- without it a waiver could not take effect
+    # until the author happened to push.
+    # A pull request that is not green does not get a review spent on it.
+    # `require_ci_green` used to be consulted only in `decide()`, which runs
+    # AFTER the model -- so a failing pull request bought a full review and
+    # then had its verdict overwritten with "CI is red". The check stays in
+    # `decide()` as well, because CI can turn red while a review is running.
+    #
+    # `none` means no CI reported at all, which is no opinion rather than a
+    # failure: a repository without CI must not become one without review.
+    if not force and policy["require_ci_green"]:
+        if pr.ci_state == "failure":
+            return "CI is red on the head commit"
+        if pr.ci_state == "pending":
+            return "CI has not finished on the head commit"
+    if not force and pr.previous_state.get("reviewed_sha") == pr.head_sha:
+        if not any(is_bot_command(c.get("body", "")) for c in pr.comments_since or []):
+            return "this commit has already been reviewed"
     return None
 
 

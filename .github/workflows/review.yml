@@ -53,6 +53,15 @@ on:
           value to copy.
         type: string
         default: '4955329'
+      force:
+        description: >
+          Review a commit that has already been reviewed. The bot skips an
+          unchanged head by default, because `pull_request_target`'s `edited`
+          type fires on a title or description tweak and would otherwise spend
+          a full review rewriting the same comment. Asking the bot directly --
+          `@marketdata-code-review re-review` -- also forces one.
+        type: boolean
+        default: false
       credential-store:
         description: >
           The private repository holding the Codex credential this job
@@ -346,6 +355,7 @@ jobs:
           # repository -- while the gate, which has the token, has just
           # allowed the same author. One job, two opposite answers.
           REVIEWBOT_ORG_TOKEN: ${{ steps.org-token.outputs.token }}
+          REVIEWBOT_FORCE: ${{ inputs.force }}
         run: |
           uv run --project bot reviewbot run \
             --event "$GITHUB_EVENT_PATH" \

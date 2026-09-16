@@ -6,6 +6,7 @@ The transport is injectable so the tests never open a socket.
 """
 
 import json
+import re
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -233,6 +234,86 @@ class GitHub:
         """The repository object. Read for `allow_auto_merge` before arming."""
         return self._request("GET", f"/repos/{self.repo}").data or {}
 
+    _TIMESTAMP = re.compile(r"^\S+Z\s")
+
+    def job_log(self, job_id: int) -> str:
+        """An Actions job log in FULL, timestamps stripped, or "".
+
+        Nothing is trimmed and nothing is extracted. An earlier version tried
+        to pick out "the interesting lines" and a measurement showed why that
+        is a losing game: on a real 84,870 byte sdk-py log, `passed in` sat
+        53,681 bytes from the END, because coverage upload, codecov and
+        post-action cleanup all run after the tests. Guessing at signals means
+        guessing wrong for whichever CI nobody tested against.
+
+        So the whole log is written to a file and the reviewer greps it if it
+        wants to. Reading costs the model tokens only for what it actually
+        reads; guessing costs correctness.
+
+        Needs the App's `actions: read`, granted and accepted 2026-09-16.
+        Losing a log degrades a review; it must never fail one.
+        """
+        try:
+            reply = self._request("GET", f"/repos/{self.repo}/actions/jobs/{job_id}/logs")
+        except GitHubError:
+            return ""
+        raw = reply.text or ""
+        if not raw:
+            return ""
+        return "\n".join(self._TIMESTAMP.sub("", line) for line in raw.splitlines())
+
+    def check_results(self, sha: str, exclude_check_name: str) -> list[dict]:
+        """Every other check run on `sha`, with whatever output it carries.
+
+        The reviewer needs to know what CI actually said -- which tests ran,
+        what failed, what the coverage was -- and it must not spend model turns
+        finding out. The harness fetches it once, here, and the brief carries
+        it.
+
+        What GitHub gives us is uneven. Measured on sdk-py#123: codecov filled
+        `output.summary` and `output.text`, while every `test (3.x)` and `Lint`
+        check from Actions had all three fields empty. An Actions job produces
+        a bare check run unless the workflow writes a job summary, and this App
+        has no `actions` permission, so job logs are not an option. A repository
+        that wants its results read must publish them; `docs/setup.md` says how.
+
+        Losing this context degrades a review. It must never fail one, so an
+        unreadable endpoint reads as "nothing to say".
+        """
+        try:
+            runs = (
+                self._request(
+                    "GET", f"/repos/{self.repo}/commits/{sha}/check-runs?per_page=100"
+                ).data
+                or {}
+            ).get("check_runs", [])
+        except GitHubError:
+            return []
+        out = []
+        for item in runs:
+            if item.get("name") == exclude_check_name:
+                continue
+            output = item.get("output") or {}
+            summary = output.get("summary") or ""
+            text = output.get("text") or ""
+            # A check run created by Actions carries NO output -- measured, both
+            # fields empty on every `test (3.x)` and `Lint` check. Its log does.
+            # A check that already told us something (codecov) is left alone:
+            # re-reading it would spend a request, and it is not an Actions job.
+            log = ""
+            if not summary and not text and item.get("id"):
+                log = self.job_log(int(item["id"]))
+            out.append(
+                {
+                    "name": item.get("name") or "",
+                    "conclusion": item.get("conclusion") or item.get("status") or "",
+                    "summary": summary,
+                    "text": text,
+                    "log": log,
+                }
+            )
+        return out
+
     def ci_state(self, sha: str, exclude_check_name: str) -> str:
         """`success`, `failure`, `pending` or `none` for everything but our own check."""
         runs = (
@@ -407,6 +488,7 @@ class GitHub:
             diff=diff,
             unseen_files=unseen,
             ci_state=self.ci_state((pull.get("head") or {}).get("sha", ""), check_name),
+            check_results=self.check_results((pull.get("head") or {}).get("sha", ""), check_name),
             previous_comment=previous,
             previous_state=state,
             comments_since=since,

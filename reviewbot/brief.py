@@ -93,6 +93,46 @@ def retry_note(errors: str) -> str:
     )
 
 
+def render_check_results(results: list[dict], budget: int = 12000) -> str:
+    """What CI said: a line per check, and a PATH to its full log.
+
+    Deliberately not the log text. The reviewer has Read and Grep, the logs are
+    on disk beside the checkout, and a finding that depends on CI output can go
+    and read it. Inlining meant choosing what to trim, and the choice was
+    measurably wrong: on a real 84,870 byte job log the pytest summary sat
+    53,681 bytes from the end, after the coverage upload and the cleanup.
+
+    `budget` still bounds any output GitHub itself gave us -- codecov fills its
+    check with a coverage table, and that is worth showing inline because it is
+    already short.
+    """
+    if not results:
+        return ""
+    # Failures first, though they are the exception rather than the rule: the
+    # bot does not start on a pull request that is not green (`should_skip`
+    # checks `require_ci_green` BEFORE the model runs). A red check reaches here
+    # only when a repository turned that off, a human passed `force`, or the
+    # conclusion is one `ci_state` does not count as failure -- `cancelled`,
+    # `neutral`, `skipped`.
+    order = {"failure": 0, "timed_out": 0, "action_required": 0, "cancelled": 1}
+    ranked = sorted(results, key=lambda r: order.get(r.get("conclusion", ""), 2))
+    lines: list[str] = []
+    used = 0
+    for item in ranked:
+        head = f"- **{item.get('name', '')}** — {item.get('conclusion', '') or 'no conclusion'}"
+        path = item.get("log_path") or ""
+        if path:
+            size = item.get("log_bytes") or 0
+            head += f"  ·  full log: `{path}` ({size:,} bytes)"
+        inline = "\n".join(x for x in (item.get("summary", ""), item.get("text", "")) if x).strip()
+        block = head
+        if inline and used + len(inline) < budget:
+            block += f"\n\n```\n{inline}\n```"
+            used += len(inline)
+        lines.append(block)
+    return "\n".join(lines)
+
+
 def compose(pr: PRFacts, policy: dict, review_md: str, checkout: str) -> str:
     """The whole brief, in one string."""
     out = [FRAME, "", f"The checkout is at {checkout}. Paths below are relative to it.", ""]
@@ -111,6 +151,26 @@ def compose(pr: PRFacts, policy: dict, review_md: str, checkout: str) -> str:
         "## Description",
         "",
         _fence("PULL REQUEST DESCRIPTION", pr.body),
+        "",
+        "## What CI said",
+        "",
+    ]
+    checks = render_check_results(pr.check_results)
+    out += [
+        checks
+        if checks
+        else "No check runs reported on this commit. Do not assume the tests pass.",
+        "",
+        "Every check below has already passed -- this review does not start "
+        "until CI is green, so a failing test never reaches you. Use the logs "
+        "for EVIDENCE, not triage: the test counts, the coverage table, what "
+        "was actually exercised. "
+        "The `full log` paths are "
+        "files this bot wrote for you under the checkout -- they are NOT part "
+        "of the pull request's diff. Grep or read one when a finding depends on "
+        "what CI actually printed: the test counts, a coverage table, a "
+        "traceback. Do not run the tests yourself, and do not guess at results "
+        "you can read.",
         "",
         "## Changed files",
         "",

@@ -118,9 +118,14 @@ def live_claude(bin_dir, monkeypatch, tmp_path):
     return tmp_path
 
 
-def review(api, event=None, checkout="/w/pr"):
+def review(api, event=None, checkout="/w/pr", force=False):
     return cli.run(
-        event=event or EVENT, repo="MarketData-App/api", token="ghs_x", checkout=checkout, api=api
+        event=event or EVENT,
+        repo="MarketData-App/api",
+        token="ghs_x",
+        checkout=checkout,
+        api=api,
+        force=force,
     )
 
 
@@ -286,10 +291,20 @@ def test_the_first_review_is_revision_one(live_claude):
 
 
 def test_a_rerun_on_the_same_sha_keeps_the_revision(live_claude):
+    # Reachable via --force and via a bot command; an ordinary re-run now
+    # skips instead, which the test below pins.
     state = {"reviewed_sha": "a" * 40, "revision": 3, "finding_ids": []}
     api = FakeGitHub(make_pr(previous_state=state, previous_comment={"id": 9, "body": "x"}))
-    review(api)
+    review(api, force=True)
     assert markers.parse(api.comments[0])["revision"] == 3
+
+
+def test_an_unchanged_head_is_not_reviewed_again(live_claude):
+    """The model must not run, and the comment must not be rewritten."""
+    state = {"reviewed_sha": "a" * 40, "revision": 3, "finding_ids": []}
+    api = FakeGitHub(make_pr(previous_state=state, previous_comment={"id": 9, "body": "x"}))
+    assert review(api) == 0
+    assert api.comments == []
 
 
 def test_a_new_sha_increments_the_revision(live_claude):

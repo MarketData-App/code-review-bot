@@ -15,7 +15,7 @@ import time as _time
 import traceback
 
 from reviewbot import brief as brief_mod
-from reviewbot import config, findings, merge, render
+from reviewbot import config, facts, findings, merge, render
 from reviewbot import policy as policy_mod
 from reviewbot import result as result_mod
 from reviewbot.backends import base as backends
@@ -228,6 +228,7 @@ def run(
     pr_number: int | None = None,
     api=None,
     org_api=None,
+    force: bool = False,
 ) -> int:
     """One whole review. Returns the process exit code."""
     number = pr_number or pr_number_from_event(event)
@@ -291,10 +292,15 @@ def run(
             f"step passes REVIEWBOT_ORG_TOKEN.",
         )
 
-    skip = policy_mod.should_skip(pr, policy)
+    skip = policy_mod.should_skip(pr, policy, force=force)
     if skip:
         print(f"reviewbot: skipped, {skip}")
         return 0
+
+    # Write CI's logs where the reviewer can grep them. After should_skip, so a
+    # pull request that is not green never gets this far and never costs the
+    # requests: by the time we are here every check has already passed.
+    pr = dataclasses.replace(pr, check_results=facts.write_check_logs(pr.check_results, checkout))
 
     try:
         text = brief_mod.compose(pr, policy, review_md, checkout)
@@ -749,6 +755,12 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument(
         "--checkout", required=True, help="path to the read-only checkout of the pull request head"
     )
+    runner.add_argument(
+        "--force",
+        action="store_true",
+        default=os.environ.get("REVIEWBOT_FORCE", "") == "true",
+        help="review even a commit that has already been reviewed",
+    )
 
     gater = sub.add_parser(
         "gate", help="decide whether this pull request may be reviewed, before any checkout"
@@ -873,6 +885,7 @@ def main(argv: list[str] | None = None) -> int:
             checkout=args.checkout,
             pr_number=args.pr,
             org_api=GitHub(args.repo, org_token) if org_token else None,
+            force=args.force,
         )
     except Exception:  # the job must fail loudly, never silently
         traceback.print_exc()

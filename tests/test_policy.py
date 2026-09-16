@@ -581,3 +581,110 @@ def test_blocking_findings_still_block_without_the_proof_gate():
         make_result(proof="missing", severities=("blocking",)), make_pr(), config.defaults(), {}
     )
     assert out.verdict != "ready"
+
+
+# --- an unchanged head is not reviewed twice --------------------------------
+
+
+REVIEWED = {"reviewed_sha": "a" * 40, "revision": 3, "finding_ids": ["x1"]}
+
+
+def test_a_head_that_was_already_reviewed_is_skipped():
+    """Re-reviewing the same commit spends tokens to rewrite the same comment.
+
+    `same_sha` already existed but only chose the revision NUMBER -- it never
+    stopped the run. That was harmless while the trigger was manual, and stops
+    being harmless the moment `pull_request_target` is armed: its `edited` type
+    fires on a title or description tweak, at an unchanged commit.
+    """
+    pr = make_pr(head_sha="a" * 40, previous_state=REVIEWED)
+    assert should_skip_reason(pr) == "this commit has already been reviewed"
+
+
+def test_a_new_head_is_reviewed():
+    pr = make_pr(head_sha="b" * 40, previous_state=REVIEWED)
+    assert should_skip_reason(pr) is None
+
+
+def test_a_first_review_is_never_skipped():
+    pr = make_pr(head_sha="a" * 40, previous_state={})
+    assert should_skip_reason(pr) is None
+
+
+def test_a_bot_command_re_reviews_an_unchanged_head():
+    # Asking for it explicitly must always work, or a waiver cannot take
+    # effect until the author happens to push.
+    pr = make_pr(
+        head_sha="a" * 40,
+        previous_state=REVIEWED,
+        comments_since=[{"body": "@marketdata-code-review re-review"}],
+    )
+    assert should_skip_reason(pr) is None
+
+
+def test_a_waiver_re_reviews_an_unchanged_head():
+    pr = make_pr(
+        head_sha="a" * 40,
+        previous_state=REVIEWED,
+        comments_since=[{"body": "@marketdata-code-review waive 580fb334"}],
+    )
+    assert should_skip_reason(pr) is None
+
+
+def test_an_unrelated_comment_does_not_re_review():
+    pr = make_pr(
+        head_sha="a" * 40,
+        previous_state=REVIEWED,
+        comments_since=[{"body": "thanks, looks good"}],
+    )
+    assert should_skip_reason(pr) == "this commit has already been reviewed"
+
+
+def test_force_overrides_the_skip():
+    pr = make_pr(head_sha="a" * 40, previous_state=REVIEWED)
+    assert policy.should_skip(pr, config.defaults(), force=True) is None
+
+
+def should_skip_reason(pr):
+    return policy.should_skip(pr, config.defaults())
+
+
+# --- do not spend a review on a pull request that is not green --------------
+
+
+def test_a_red_pull_request_is_not_reviewed_at_all():
+    """The model must not run. It used to run, then have its verdict flipped.
+
+    `require_ci_green` was only consulted in `decide()`, which happens AFTER
+    `backends.run()`. So a failing pull request bought a full review, tokens
+    and all, and then had the result overwritten with "CI is red".
+    """
+    pr = make_pr(ci_state="failure")
+    assert policy.should_skip(pr, config.defaults()) == "CI is red on the head commit"
+
+
+def test_a_pending_pull_request_is_not_reviewed_yet():
+    pr = make_pr(ci_state="pending")
+    assert policy.should_skip(pr, config.defaults()) == "CI has not finished on the head commit"
+
+
+def test_a_green_pull_request_is_reviewed():
+    assert policy.should_skip(make_pr(ci_state="success"), config.defaults()) is None
+
+
+def test_a_repository_with_no_ci_at_all_is_still_reviewed():
+    # "none" is no opinion, not a failure. A repository without CI must not
+    # become a repository without review.
+    assert policy.should_skip(make_pr(ci_state="none"), config.defaults()) is None
+
+
+def test_turning_the_ci_requirement_off_reviews_anyway():
+    pol = config.load("require_ci_green: false\n")
+    assert policy.should_skip(make_pr(ci_state="failure"), pol) is None
+
+
+def test_force_reviews_a_red_pull_request():
+    # Asking deliberately must still work -- debugging a review on a branch
+    # whose CI is red is a real thing to want.
+    pr = make_pr(ci_state="failure")
+    assert policy.should_skip(pr, config.defaults(), force=True) is None

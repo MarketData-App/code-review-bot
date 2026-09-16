@@ -485,3 +485,19 @@ def test_the_job_budget_the_cli_assumes_matches_the_workflow():
     from reviewbot import cli
 
     assert REVIEW["jobs"]["review"]["timeout-minutes"] == cli.JOB_BUDGET_MINUTES
+
+
+def test_the_force_input_reaches_the_review_step():
+    # A skip you cannot override is a trap: `waive` and a deliberate re-review
+    # both need a way back in.
+    assert REVIEW[ON]["workflow_call"]["inputs"]["force"]["default"] is False
+    assert "inputs.force" in step("Run the review")["env"]["REVIEWBOT_FORCE"]
+
+
+def test_the_caller_template_warns_about_the_ci_gate_and_automatic_triggers():
+    # The bot now skips a pull request whose CI is pending, and
+    # pull_request_target fires exactly when CI starts. Anyone copying this
+    # template must meet that fact before they hit it in production.
+    text = (ROOT / "docs/caller-workflow.yml").read_text()
+    assert "CI has not finished" in text
+    assert "workflow_run" in text
