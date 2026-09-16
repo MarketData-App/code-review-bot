@@ -132,8 +132,8 @@ def test_a_held_lease_reports_not_fetched_and_still_exits_zero(tmp_path, transpo
                 "https://run/1",
                 "--codex-home",
                 str(home),
-                "--attempts",
-                "1",
+                "--wait-minutes",
+                "0",
             ]
         )
         == 0
@@ -158,8 +158,8 @@ def test_an_unreachable_store_reports_not_fetched_and_still_exits_zero(tmp_path,
                 "https://run/1",
                 "--codex-home",
                 str(tmp_path / "h"),
-                "--attempts",
-                "1",
+                "--wait-minutes",
+                "0",
             ]
         )
         == 0
@@ -327,8 +327,8 @@ def test_checkout_survives_a_raw_transport_error(tmp_path, monkeypatch, capsys):
             "https://run/1",
             "--codex-home",
             str(tmp_path / "h"),
-            "--attempts",
-            "1",
+            "--wait-minutes",
+            "0",
         ]
     )
     assert code == 0
@@ -412,8 +412,8 @@ def test_a_failure_writes_one_definite_output_and_exits_zero(tmp_path, transport
             "https://run/1",
             "--codex-home",
             str(tmp_path / "h"),
-            "--attempts",
-            "1",
+            "--wait-minutes",
+            "0",
         ]
     )
     assert code == 0
@@ -609,3 +609,90 @@ def test_an_unreadable_policy_borrows_rather_than_skipping(tmp_path, transport, 
         == 0
     )
     assert "fetched=true" in capsys.readouterr().out
+
+
+# --- waiting for the shared lease ------------------------------------------
+
+
+def test_a_held_lease_is_waited_for_not_abandoned(tmp_path, transport, capsys, monkeypatch):
+    """One plan is shared, so a review that arrives second must queue.
+
+    Giving up used to mean the backend was silently dropped -- and on a
+    codex-only repository that is no review at all, not a degraded one.
+    """
+    naps = []
+    monkeypatch.setattr(cli._time, "sleep", naps.append)
+    held = json.dumps({"holder": "other#1", "expires_at": "2099-01-01T00:00:00+00:00"})
+    for _ in range(3):
+        transport.add(
+            "GET",
+            f"/repos/{STORE}/contents/codex/lease.json?ref=main",
+            data={
+                "encoding": "base64",
+                "content": base64.b64encode(held.encode()).decode(),
+                "sha": "b1",
+            },
+        )
+    # then it frees, and we take it
+    free_lease(transport)
+    issue_copy(transport)
+    home = tmp_path / "codex-home"
+    assert (
+        cli.main(
+            [
+                "credential-checkout",
+                "--store",
+                STORE,
+                "--holder",
+                "me#1",
+                "--run-url",
+                "u",
+                "--codex-home",
+                str(home),
+                "--wait-minutes",
+                "25",
+                "--poll-seconds",
+                "20",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "fetched=true" in out
+    assert "waiting" in out
+    assert naps, "it must actually sleep between attempts rather than spin"
+
+
+def test_the_wait_is_bounded_and_gives_up_cleanly(tmp_path, transport, capsys, monkeypatch):
+    monkeypatch.setattr(cli._time, "sleep", lambda s: None)
+    held = json.dumps({"holder": "other#1", "expires_at": "2099-01-01T00:00:00+00:00"})
+    transport.add(
+        "GET",
+        f"/repos/{STORE}/contents/codex/lease.json?ref=main",
+        data={
+            "encoding": "base64",
+            "content": base64.b64encode(held.encode()).decode(),
+            "sha": "b1",
+        },
+    )
+    home = tmp_path / "codex-home"
+    assert (
+        cli.main(
+            [
+                "credential-checkout",
+                "--store",
+                STORE,
+                "--holder",
+                "me#1",
+                "--run-url",
+                "u",
+                "--codex-home",
+                str(home),
+                "--wait-minutes",
+                "0",
+            ]
+        )
+        == 0
+    )
+    assert "fetched=false" in capsys.readouterr().out
+    assert not home.exists()

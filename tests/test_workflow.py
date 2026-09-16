@@ -470,3 +470,10 @@ def test_the_borrow_step_tells_the_bot_which_repository_it_is_for():
     run = step("Borrow the Codex credential")["run"]
     assert "--repo" in run
     assert "--pr" in run
+
+
+def test_the_job_timeout_exceeds_the_credential_wait_plus_the_review():
+    # The borrow step waits up to 25 minutes for the shared lease and the model
+    # is capped at 15, so a job limit below 40 would kill a review that was
+    # only ever queueing politely.
+    assert REVIEW["jobs"]["review"]["timeout-minutes"] >= 40
