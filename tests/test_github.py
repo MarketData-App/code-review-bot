@@ -613,3 +613,64 @@ def test_a_server_error_reads_as_unknown(api, transport):
 
 def test_an_empty_login_is_not_a_member(api, transport):
     assert api.is_org_member("MarketData-App", "") is False
+
+
+# --- reading and writing one file, with its blob sha ------------------------
+
+
+def test_file_with_sha_returns_the_text_and_the_blob_sha(api, transport):
+    import base64
+
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/contents/codex/lease.json?ref=main",
+        data={
+            "encoding": "base64",
+            "content": base64.b64encode(b'{"holder": null}').decode(),
+            "sha": "blob111",
+        },
+    )
+    text, sha = api.file_with_sha("codex/lease.json", "main")
+    assert text == '{"holder": null}'
+    assert sha == "blob111"
+
+
+def test_file_with_sha_reads_a_missing_file_as_two_nones(api, transport):
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/contents/codex/lease.json?ref=main",
+        status=404,
+        text="Not Found",
+    )
+    assert api.file_with_sha("codex/lease.json", "main") == (None, None)
+
+
+def test_put_file_sends_the_branch_and_the_sha(api, transport):
+    import base64
+
+    transport.add("PUT", "/repos/MarketData-App/api/contents/codex/lease.json", data={"commit": {}})
+    assert api.put_file("codex/lease.json", "{}", "take the lease", "main", "blob111") is True
+    sent = transport.calls[-1]["body"]
+    assert sent["branch"] == "main"
+    assert sent["sha"] == "blob111"
+    assert sent["message"] == "take the lease"
+    assert base64.b64decode(sent["content"]).decode() == "{}"
+
+
+def test_put_file_omits_the_sha_when_creating_a_new_file(api, transport):
+    transport.add("PUT", "/repos/MarketData-App/api/contents/codex/lease.json", data={"commit": {}})
+    api.put_file("codex/lease.json", "{}", "create the lease", "main", None)
+    assert "sha" not in transport.calls[-1]["body"]
+
+
+def test_put_file_reads_a_409_as_lost_the_race_not_as_an_error(api, transport):
+    # The contents API answers 409 when the blob sha no longer matches. That is
+    # the compare-and-swap working, and it is how two jobs racing for the lease
+    # produce one winner. It must not raise.
+    transport.add(
+        "PUT",
+        "/repos/MarketData-App/api/contents/codex/lease.json",
+        status=409,
+        text="does not match",
+    )
+    assert api.put_file("codex/lease.json", "{}", "take the lease", "main", "stale") is False
