@@ -53,7 +53,7 @@ one fewer value to copy.
 |---|---|---|
 | `CODE_REVIEW_APP_PRIVATE_KEY` | The whole `.pem` file, header and footer included | The same two places |
 | `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` | The same two places |
-| `OPENAI_API_KEY` | Optional. Only if a repo runs the Codex backend | The same two places |
+| `OPENAI_API_KEY` | Optional. An API key for the Codex backend. A repository with no key borrows a credential instead; see "The Codex credential" below | The same two places |
 
 **Why the MarketDataApp repositories need their own copies.** An organisation
 secret can only be granted to repositories *in that organisation*, and the
@@ -82,6 +82,27 @@ Two ways to avoid the duplication, both larger decisions:
   this repository would not need to be public at all.
 - **Accept two secrets per SDK repository**, which is where things stand. For the organisation secrets, set the repository
 access to the repositories that call the bot.
+
+## 3a. The Codex credential
+
+The Codex backend can run from a ChatGPT plan instead of an API key. A
+personal plan authenticates with a file that holds a refresh token, and
+OpenAI's CI guidance is explicit that one such file must not be shared across
+concurrent jobs or machines: two processes redeeming one refresh token kill
+the credential.
+
+So no repository holds that file. One vault on skynet holds it, a keeper
+publishes a copy whose refresh token is a placeholder, and each job borrows
+that copy under a lease and deletes it afterwards. A borrowed copy can
+authenticate and cannot refresh, so no number of concurrent reviews can
+break the credential.
+
+`docs/superpowers/specs/2026-09-16-codex-credential-leasing-design.md` is the
+design, including what it costs and the condition that would replace it: a
+ChatGPT Business or Enterprise workspace supports Codex access tokens, which
+are finite and revocable, and would make all of this unnecessary.
+
+Turn it off for one repository with `with: { credential-store: '' }`.
 
 ## 4. Turn it on for a repository
 

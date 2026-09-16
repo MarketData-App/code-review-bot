@@ -40,6 +40,11 @@ jobs:
 
 Private repositories add `with: { runs-on: '["self-hosted", "marketdata-docker"]' }`.
 
+The Codex backend needs no secret: the job borrows a short-lived credential
+from a private store. Pass `credential-store: ''` to turn that off. A
+repository that prefers an API key sets `OPENAI_API_KEY` and that takes
+precedence.
+
 ## Setting it up
 
 The GitHub App is created by hand, once. `docs/setup.md` has the exact
