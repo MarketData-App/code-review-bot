@@ -242,9 +242,20 @@ runner is deliberately not `--ephemeral` (the runner project's
 credential to a persistent path would leave it for the next job, which may
 belong to a different repository.
 
-**The job deletes the credential when it finishes.** A step marked
-`if: always()` removes `$CODEX_HOME` and releases the lease. It runs on
-success, on failure, and on cancellation.
+**The job deletes the credential when it finishes.** A step conditioned on
+`always() && steps.gate.outputs.trusted == 'true'` removes `$CODEX_HOME` and
+releases the lease. It runs on success, on failure, and on cancellation.
+
+That condition is deliberately not a bare `always()`, and this was corrected
+during implementation after a review traced what a bare one does. On a pull
+request the gate REFUSED, a bare `always()` still runs the step, and
+`credential-checkin` then makes an authenticated `GET` against the private
+store with the organisation App token on behalf of an untrusted pull request.
+Nothing leaks -- the call is read-only unless the lease holder matches, and on
+`pull_request_target` the holder is always the base repository -- but the call
+should not happen at all. Adding the gate condition costs no cleanup: step
+outputs survive failure and cancellation, and the credential can only exist
+when the borrow step ran, which itself requires `trusted == 'true'`.
 
 Be clear about what that deletion does and does not buy. It removes the file
 from a persistent runner, which is real and worth having. It does **not**
@@ -278,9 +289,12 @@ The loser retries with backoff for a bounded time.
 is over three times the observed worst case and still short enough that a
 killed job does not block the next review for long.
 
-**Check-in.** A final step marked `if: always()` PUTs the lease back to free.
-It runs after success, after failure, and after the review is cancelled,
-provided the cancellation leaves the runner time to execute it.
+**Check-in.** A final step conditioned on
+`always() && steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''`
+PUTs the lease back to free. It runs after success, after failure, and after
+the review is cancelled, provided the cancellation leaves the runner time to
+execute it -- but never for a pull request the gate refused, and never for a
+caller that has turned borrowing off.
 
 **When check-in does not happen** — a hard kill, a runner that vanishes — the
 lease simply expires. The next job sees `expires_at` in the past and takes it
@@ -309,9 +323,12 @@ After the gate, before `Install the model CLIs`:
   succeeded.
 - The existing install step changes its condition from "`OPENAI_API_KEY` is
   set" to "the check-out succeeded **or** `OPENAI_API_KEY` is set".
-- **Check in the Codex credential**, last step, `if: always()`. It removes
-  `$CODEX_HOME` and releases the lease, in that order, so a failure to reach
-  the store still leaves no credential on the runner.
+- **Check in the Codex credential**, last step, conditioned on
+  `always() && steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''`.
+  It removes `$CODEX_HOME` and releases the lease, in that order, so a failure
+  to reach the store still leaves no credential on the runner. Every step after
+  the gate carries the gate's condition, with no exception -- which is what
+  `tests/test_workflow.py` asserts, name-free.
 
 `OPENAI_API_KEY` stays supported and takes precedence. A repository that
 prefers an API key is unaffected by any of this.
