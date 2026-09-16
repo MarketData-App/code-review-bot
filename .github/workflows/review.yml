@@ -250,6 +250,12 @@ jobs:
       # not --ephemeral, so anything written to a durable path would wait
       # there for the next job, which may belong to another repository.
       #
+      # The holder carries the run id. Two runs for the same repository and
+      # pull request overlap routinely -- cancel-in-progress kills the first
+      # while its `always()` check-in is still to come -- and a holder without
+      # the run id makes the two indistinguishable, so the dying run frees the
+      # live run's lease. See `release` in reviewbot/credentials.py.
+      #
       # `|| echo fetched=false`: A CREDENTIAL PROBLEM MUST NEVER FAIL A
       # REVIEW. `reviewbot credential-checkout` exits 0 on every failure it
       # can name, but it cannot report on what happens before it runs: an
@@ -267,7 +273,7 @@ jobs:
         run: |
           uv run --project bot reviewbot credential-checkout \
             --store "${{ inputs.credential-store }}" \
-            --holder "${{ github.repository }}#${{ steps.pr.outputs.number }}" \
+            --holder "${{ github.repository }}#${{ steps.pr.outputs.number }}#${{ github.run_id }}-${{ github.run_attempt }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --codex-home "$RUNNER_TEMP/codex-home" \
             || echo "fetched=false" >> "$GITHUB_OUTPUT"
@@ -314,6 +320,10 @@ jobs:
       # cancel-in-progress strands nothing. This step is still worth having:
       # it removes the credential from a runner whose filesystem persists, and
       # it frees the lease immediately rather than in twenty minutes.
+      #
+      # The holder is the borrow step's, character for character. A check-in
+      # under a different holder frees a lease this run never took, and the
+      # lease it should have freed then waits out its full TTL.
       - name: Return the Codex credential
         if: always() && steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''
         env:
@@ -321,5 +331,5 @@ jobs:
         run: |
           uv run --project bot reviewbot credential-checkin \
             --store "${{ inputs.credential-store }}" \
-            --holder "${{ github.repository }}#${{ steps.pr.outputs.number }}" \
+            --holder "${{ github.repository }}#${{ steps.pr.outputs.number }}#${{ github.run_id }}-${{ github.run_attempt }}" \
             --codex-home "$RUNNER_TEMP/codex-home" || true

@@ -400,3 +400,30 @@ def test_the_borrow_fallback_names_a_definite_output():
     assert "fetched=true" not in borrow["run"]
     # Exactly one fallback, so the output cannot be written twice in one run.
     assert borrow["run"].count("fetched=") == 1
+
+
+def holder_argument(run_text):
+    """The `--holder` value one step passes, unquoted."""
+    match = re.search(r'--holder\s+"([^"]+)"', run_text)
+    assert match, f"no --holder argument in: {run_text}"
+    return match.group(1)
+
+
+def test_the_borrowed_lease_holder_names_the_run_not_only_the_pull_request():
+    # cancel-in-progress is true, so two runs for one repository and pull
+    # request overlap routinely: the cancelled run's `always()` check-in can
+    # land after the new run has taken the lease. While the holder was
+    # `<repo>#<pr>` the two strings were equal, `release` could not tell them
+    # apart, and the dying run freed the live run's lease.
+    holder = holder_argument(step("Borrow the Codex credential")["run"])
+    assert "github.run_id" in holder
+    assert "github.repository" in holder
+    assert "steps.pr.outputs.number" in holder
+
+
+def test_the_check_in_frees_the_lease_under_the_very_same_holder():
+    # A check-in under a different string frees nothing, and the lease then
+    # waits out its full TTL denying Codex to every other repository.
+    assert holder_argument(step("Return the Codex credential")["run"]) == holder_argument(
+        step("Borrow the Codex credential")["run"]
+    )

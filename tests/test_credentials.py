@@ -194,3 +194,26 @@ def test_release_leaves_a_lease_another_job_now_holds(store):
     lease_body(transport, "sdk-go#41", "2026-09-16T14:30:00+00:00")
     credentials.release(api, "sdk-py#100")
     assert [c["method"] for c in transport.calls] == ["GET"]
+
+
+# --- fix round 2: the holder names one run, not one pull request ----------
+
+
+def test_two_runs_of_one_pull_request_do_not_free_each_other(store):
+    # cancel-in-progress kills the first run on every push, and its `always()`
+    # check-in can land after the replacement run has taken the lease. While
+    # the holder was `<repo>#<pr>` the two strings matched, so the dying run
+    # freed the live run's lease -- the case this guard exists to prevent.
+    api, transport = store
+    lease_body(transport, "MarketData-App/sdk-py#100#552-1", "2026-09-16T14:20:00+00:00")
+    credentials.release(api, "MarketData-App/sdk-py#100#551-1")
+    assert [c["method"] for c in transport.calls] == ["GET"]
+
+
+def test_a_run_still_frees_its_own_lease(store):
+    api, transport = store
+    lease_body(transport, "MarketData-App/sdk-py#100#551-1", "2026-09-16T14:20:00+00:00")
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    credentials.release(api, "MarketData-App/sdk-py#100#551-1")
+    written = json.loads(base64.b64decode(transport.calls[-1]["body"]["content"]))
+    assert written["holder"] is None

@@ -118,11 +118,20 @@ def acquire(api, holder: str, run_url: str, now: datetime.datetime, ttl_minutes:
 
 
 def release(api, holder: str) -> None:
-    """Free the lease, but only if we still hold it.
+    """Free the lease, but only if this exact run still holds it.
 
     A job whose TTL expired may find another job already holding the lease by
     the time its `if: always()` step runs. Freeing it then would hand a second
     job the credential while the first is still working.
+
+    That guarantee is only as good as `holder`, and `holder` must therefore
+    name the RUN, not the pull request. The workflow sets
+    `cancel-in-progress: true`, so a push to a pull request routinely leaves a
+    cancelled run's check-in racing a new run that has already taken the
+    lease. While the holder was `<repo>#<pr>`, those two strings were equal,
+    this comparison passed, and the dying run freed the live run's lease --
+    the precise case this function exists to prevent. The workflow now appends
+    `#<run_id>-<run_attempt>`, so a holder identifies one run and one attempt.
     """
     lease, sha = _read_lease(api)
     if lease.get("holder") != holder:
