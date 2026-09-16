@@ -104,3 +104,65 @@ def test_it_refuses_when_there_is_no_vault(tmp_path, capsys):
         == 1
     )
     assert "auth.json" in capsys.readouterr().out
+
+
+def bad_vault(tmp_path, text: str):
+    """A vault whose auth.json holds `text` verbatim, valid JSON or not."""
+    home = tmp_path / "vault"
+    home.mkdir()
+    (home / "auth.json").write_text(text)
+    return home
+
+
+def test_it_refuses_a_vault_that_is_a_json_number(tmp_path, capsys):
+    # The keeper runs unattended, nightly. Its contract is one line saying why
+    # it refused, and exit 1. `5` parses, so the "cannot read" branch does not
+    # catch it, and every later line assumes a mapping.
+    home, out = bad_vault(tmp_path, "5"), tmp_path / "out"
+    assert cli.main(["derive-credential", "--codex-home", str(home), "--out", str(out)]) == 1
+    assert "reviewbot derive-credential:" in capsys.readouterr().out
+    assert not (out / "auth.json").exists()
+
+
+def test_it_refuses_a_vault_that_is_json_null(tmp_path, capsys):
+    home, out = bad_vault(tmp_path, "null"), tmp_path / "out"
+    assert cli.main(["derive-credential", "--codex-home", str(home), "--out", str(out)]) == 1
+    assert "reviewbot derive-credential:" in capsys.readouterr().out
+
+
+def test_it_refuses_a_vault_that_is_a_json_string(tmp_path, capsys):
+    home, out = bad_vault(tmp_path, '"x"'), tmp_path / "out"
+    assert cli.main(["derive-credential", "--codex-home", str(home), "--out", str(out)]) == 1
+    assert "reviewbot derive-credential:" in capsys.readouterr().out
+
+
+def test_it_refuses_a_vault_that_is_a_json_array(tmp_path, capsys):
+    home, out = bad_vault(tmp_path, "[1, 2]"), tmp_path / "out"
+    assert cli.main(["derive-credential", "--codex-home", str(home), "--out", str(out)]) == 1
+    assert "reviewbot derive-credential:" in capsys.readouterr().out
+
+
+def test_it_refuses_a_vault_whose_tokens_are_not_an_object(tmp_path, capsys):
+    # A truthy non-mapping walks straight through `(auth.get("tokens") or {})`
+    # in `access_token_expiry`, so the object guard above does not cover it.
+    home, out = bad_vault(tmp_path, json.dumps({"tokens": [1, 2]})), tmp_path / "out"
+    assert cli.main(["derive-credential", "--codex-home", str(home), "--out", str(out)]) == 1
+    assert "reviewbot derive-credential:" in capsys.readouterr().out
+    assert not (out / "auth.json").exists()
+
+
+def test_a_truncated_vault_still_reports_that_it_cannot_be_read(tmp_path, capsys):
+    home, out = bad_vault(tmp_path, '{"tokens": {'), tmp_path / "out"
+    assert cli.main(["derive-credential", "--codex-home", str(home), "--out", str(out)]) == 1
+    assert "cannot read" in capsys.readouterr().out
+
+
+def test_access_token_expiry_rejects_tokens_that_are_not_an_object():
+    # The documented failure mode of this function is CredentialError, and the
+    # caller catches exactly that. An AttributeError escapes it.
+    for tokens in ([1, 2], "x", 5):
+        try:
+            credentials.access_token_expiry({"tokens": tokens})
+        except credentials.CredentialError:
+            continue
+        raise AssertionError(f"no CredentialError for tokens={tokens!r}")
