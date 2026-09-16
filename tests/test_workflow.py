@@ -374,3 +374,29 @@ def test_the_review_step_reads_the_directory_the_borrow_step_wrote():
     assert returned == borrowed
     assert used == "${{ runner.temp }}/codex-home"
     assert used.split("}}", 1)[1] == borrowed.split("$RUNNER_TEMP", 1)[1]
+
+
+# --- fix round 2: a credential problem must never fail a review -----------
+
+
+def test_the_borrow_step_cannot_fail_the_job():
+    # `reviewbot credential-checkout` exits 0 on every failure it can name,
+    # but it cannot report on a failure BEFORE its body runs. The organisation
+    # token above is continue-on-error, so an empty GITHUB_TOKEN is an
+    # expected state, and argparse answers it with SystemExit(2) before
+    # `credential_checkout` -- and its total `except Exception` -- is entered.
+    # Without a shell-level fallback the step fails and the review goes red.
+    borrow = step("Borrow the Codex credential")
+    assert borrow.get("continue-on-error") is True or "||" in borrow["run"]
+    assert '|| echo "fetched=false" >> "$GITHUB_OUTPUT"' in borrow["run"]
+
+
+def test_the_borrow_fallback_names_a_definite_output():
+    # `fetched=false`, not silence: a later `== 'true'` comparison must read a
+    # definite value rather than an empty string.
+    borrow = step("Borrow the Codex credential")
+    fallback = borrow["run"].split("||", 1)[1]
+    assert "fetched=false" in fallback
+    assert "fetched=true" not in borrow["run"]
+    # Exactly one fallback, so the output cannot be written twice in one run.
+    assert borrow["run"].count("fetched=") == 1

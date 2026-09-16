@@ -249,6 +249,16 @@ jobs:
       # CODEX_HOME is under RUNNER_TEMP on purpose. The self-hosted runner is
       # not --ephemeral, so anything written to a durable path would wait
       # there for the next job, which may belong to another repository.
+      #
+      # `|| echo fetched=false`: A CREDENTIAL PROBLEM MUST NEVER FAIL A
+      # REVIEW. `reviewbot credential-checkout` exits 0 on every failure it
+      # can name, but it cannot report on what happens before it runs: an
+      # empty GITHUB_TOKEN (the org token mint above is continue-on-error, so
+      # an empty token is an expected state) makes argparse exit 2 before the
+      # command body is entered. Without the fallback that reds the whole
+      # review. The command writes `fetched=` itself on every path that exits
+      # 0, so the fallback runs only when nothing was written, and the value
+      # the later steps read is never doubled or stale.
       - name: Borrow the Codex credential
         id: codex
         if: steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''
@@ -259,7 +269,8 @@ jobs:
             --store "${{ inputs.credential-store }}" \
             --holder "${{ github.repository }}#${{ steps.pr.outputs.number }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --codex-home "$RUNNER_TEMP/codex-home"
+            --codex-home "$RUNNER_TEMP/codex-home" \
+            || echo "fetched=false" >> "$GITHUB_OUTPUT"
 
       - name: Install the model CLIs
         if: steps.gate.outputs.trusted == 'true'

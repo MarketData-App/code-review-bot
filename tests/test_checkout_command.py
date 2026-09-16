@@ -360,3 +360,91 @@ def test_checkin_survives_a_raw_transport_error(tmp_path, monkeypatch):
     )
     assert code == 0
     assert not home.exists()
+
+
+# --- fix round 2: the value the workflow step reads back ------------------
+
+
+def test_the_output_key_is_written_exactly_once(tmp_path, transport, monkeypatch):
+    # The borrow step appends `fetched=false` itself when the command fails
+    # before it can speak. That fallback is only safe while the command writes
+    # at most one `fetched=` line and exits 0 whenever it has written one:
+    # otherwise a later `steps.codex.outputs.fetched == 'true'` could read a
+    # doubled or stale value.
+    free_lease(transport)
+    issue_copy(transport)
+    output = tmp_path / "gh-output"
+    output.write_text("")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    code = cli.main(
+        [
+            "credential-checkout",
+            "--store",
+            STORE,
+            "--holder",
+            "sdk-py#100#551-1",
+            "--run-url",
+            "https://run/1",
+            "--codex-home",
+            str(tmp_path / "codex-home"),
+        ]
+    )
+    assert code == 0
+    lines = [ln for ln in output.read_text().splitlines() if ln.startswith("fetched=")]
+    assert lines == ["fetched=true"]
+
+
+def test_a_failure_writes_one_definite_output_and_exits_zero(tmp_path, transport, monkeypatch):
+    transport.add(
+        "GET", f"/repos/{STORE}/contents/codex/lease.json?ref=main", status=500, text="boom"
+    )
+    output = tmp_path / "gh-output"
+    output.write_text("")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    code = cli.main(
+        [
+            "credential-checkout",
+            "--store",
+            STORE,
+            "--holder",
+            "sdk-py#100#551-1",
+            "--run-url",
+            "https://run/1",
+            "--codex-home",
+            str(tmp_path / "h"),
+            "--attempts",
+            "1",
+        ]
+    )
+    assert code == 0
+    lines = [ln for ln in output.read_text().splitlines() if ln.startswith("fetched=")]
+    assert lines == ["fetched=false"]
+
+
+def test_a_missing_token_exits_before_the_command_can_report(tmp_path, monkeypatch):
+    """Why the workflow step carries `|| echo fetched=false`.
+
+    The organisation token is minted `continue-on-error`, so an empty
+    GITHUB_TOKEN is an expected state rather than a bug. argparse answers it
+    with SystemExit(2) BEFORE `credential_checkout` is entered, so the total
+    `except Exception` inside it never sees this one and the step -- and the
+    whole review -- goes red. The fallback in the workflow is what catches it;
+    tests/test_workflow.py asserts the fallback is there.
+    """
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("REVIEWBOT_TOKEN", raising=False)
+    with pytest.raises(SystemExit) as caught:
+        cli.main(
+            [
+                "credential-checkout",
+                "--store",
+                STORE,
+                "--holder",
+                "sdk-py#100#551-1",
+                "--run-url",
+                "https://run/1",
+                "--codex-home",
+                str(tmp_path / "h"),
+            ]
+        )
+    assert caught.value.code == 2
