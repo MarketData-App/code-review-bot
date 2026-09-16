@@ -440,6 +440,103 @@ def derive_credential(codex_home: str, out: str, min_hours: float) -> int:
     return 0
 
 
+def _store_api(repo: str, token: str):
+    """The store is a different repository, so it needs its own client.
+
+    A seam, so the tests can inject a transport without reaching the network.
+    """
+    return GitHub(repo, token)
+
+
+def _say_output(key: str, value: str) -> None:
+    """Print for a human, and write for the workflow step that reads it."""
+    print(f"{key}={value}")
+    out_path = os.environ.get("GITHUB_OUTPUT")
+    if out_path:
+        with open(out_path, "a") as handle:
+            handle.write(f"{key}={value}\n")
+
+
+def credential_checkout(
+    store: str, holder: str, run_url: str, codex_home: str, attempts: int, token: str
+) -> int:
+    """Take the lease and write the borrowed credential. Never fails the review.
+
+    Every failure here reports `fetched=false` and exits 0. A job that cannot
+    borrow the credential must review with Claude alone, not go red: a missing
+    backend is already an ordinary outcome for `backends.run()`.
+    """
+    import datetime as _dt
+    import time as _time
+    from pathlib import Path
+
+    from reviewbot import credentials
+
+    api = _store_api(store, token)
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            if credentials.acquire(api, holder, run_url, _dt.datetime.now(_dt.UTC)):
+                break
+            print(f"reviewbot: the credential lease is held, attempt {attempt}/{attempts}")
+        except GitHubError as exc:
+            print(f"reviewbot: cannot reach the credential store: {scrub(str(exc))}")
+            _say_output("fetched", "false")
+            return 0
+        if attempt == attempts:
+            _say_output("fetched", "false")
+            return 0
+        _time.sleep(min(2**attempt, 30))
+
+    try:
+        text = api.file_at_ref(credentials.ISSUE_PATH, credentials.ISSUE_BRANCH)
+    except GitHubError as exc:
+        print(f"reviewbot: cannot read the issued credential: {scrub(str(exc))}")
+        credentials.release(api, holder)
+        _say_output("fetched", "false")
+        return 0
+    if not text:
+        print("reviewbot: the store holds no issued credential")
+        credentials.release(api, holder)
+        _say_output("fetched", "false")
+        return 0
+
+    # Mask before writing: a later step that echoes the file must not leak it.
+    try:
+        for value in (json.loads(text).get("tokens") or {}).values():
+            if isinstance(value, str) and value != credentials.PLACEHOLDER:
+                print(f"::add-mask::{value}")
+    except json.JSONDecodeError:
+        pass
+
+    home = Path(codex_home)
+    home.mkdir(parents=True, exist_ok=True)
+    home.chmod(0o700)
+    auth = home / "auth.json"
+    auth.write_text(text)
+    auth.chmod(0o600)
+    _say_output("fetched", "true")
+    return 0
+
+
+def credential_checkin(store: str, holder: str, codex_home: str, token: str) -> int:
+    """Delete the borrowed credential, then free the lease. Never fails.
+
+    In that order, deliberately. The lease expires by itself after its TTL; a
+    credential left behind on a persistent self-hosted runner does not.
+    """
+    import shutil as _shutil
+    from pathlib import Path
+
+    from reviewbot import credentials
+
+    _shutil.rmtree(Path(codex_home), ignore_errors=True)
+    try:
+        credentials.release(_store_api(store, token), holder)
+    except GitHubError as exc:
+        print(f"reviewbot: could not free the lease, it will expire: {scrub(str(exc))}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """`reviewbot run --event <path> [--pr N]`."""
     parser = argparse.ArgumentParser(prog="reviewbot")
@@ -486,6 +583,18 @@ def main(argv: list[str] | None = None) -> int:
         default=48.0,
         help="refuse to publish a token with less life than this",
     )
+
+    checkout = sub.add_parser("credential-checkout", help="borrow the Codex credential")
+    checkout.add_argument("--store", required=True, help="owner/name of the credential store")
+    checkout.add_argument("--holder", required=True, help="who is taking the lease")
+    checkout.add_argument("--run-url", default="", help="the run that holds the lease")
+    checkout.add_argument("--codex-home", required=True, help="where to write auth.json")
+    checkout.add_argument("--attempts", type=int, default=4, help="lease attempts before giving up")
+
+    checkin = sub.add_parser("credential-checkin", help="return the Codex credential")
+    checkin.add_argument("--store", required=True, help="owner/name of the credential store")
+    checkin.add_argument("--holder", required=True, help="who took the lease")
+    checkin.add_argument("--codex-home", required=True, help="the directory to remove")
     args = parser.parse_args(argv)
 
     if args.command == "derive-credential":
@@ -494,6 +603,14 @@ def main(argv: list[str] | None = None) -> int:
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("REVIEWBOT_TOKEN")
     if not token:
         parser.error("GITHUB_TOKEN is not set")
+
+    if args.command == "credential-checkout":
+        return credential_checkout(
+            args.store, args.holder, args.run_url, args.codex_home, args.attempts, token
+        )
+    if args.command == "credential-checkin":
+        return credential_checkin(args.store, args.holder, args.codex_home, token)
+
     if not args.repo:
         parser.error("GITHUB_REPOSITORY is not set and --repo was not given")
 
