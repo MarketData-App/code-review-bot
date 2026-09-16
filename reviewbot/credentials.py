@@ -53,7 +53,8 @@ def access_token_expiry(auth: dict) -> datetime.datetime:
     The token is never verified here, only read: this decides whether the
     keeper may publish, and GitHub is not the issuer.
     """
-    token = (auth.get("tokens") or {}).get("access_token")
+    tokens = auth.get("tokens")
+    token = tokens.get("access_token") if isinstance(tokens, dict) else None
     if not isinstance(token, str):
         raise CredentialError("the credential has no access_token")
     parts = token.split(".")

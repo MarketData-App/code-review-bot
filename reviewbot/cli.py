@@ -412,6 +412,13 @@ def derive_credential(codex_home: str, out: str, min_hours: float) -> int:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"reviewbot derive-credential: cannot read {source}: {exc}")
         return 1
+    # A vault file may be valid JSON that is not an object (e.g. "5" or
+    # "null"), so guard with isinstance rather than trust `.get` to exist.
+    # This runs unattended in the keeper: it owes one line and exit 1, not a
+    # traceback. `credential_checkout` guards the store's reply the same way.
+    if not isinstance(auth, dict):
+        print(f"reviewbot derive-credential: {source} is not a JSON object")
+        return 1
 
     try:
         expires = credentials.access_token_expiry(auth)
