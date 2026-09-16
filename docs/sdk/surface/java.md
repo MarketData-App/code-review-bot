@@ -20,14 +20,17 @@ Breaking, for this SDK:
   purely additive
 - a parameter type widened in place, which keeps source compatibility and
   breaks binary compatibility. Adding an overload keeps both
-- an abstract method added to an interface or an abstract class, unless it has a
-  `default` implementation
+- an abstract method added to an interface without a `default` implementation,
+  or added to an abstract class without a concrete one
 - visibility narrowed, a method made `final`, or a class made `final`
 - a checked exception added to a `throws` clause
 - an enum constant removed, or reordered when callers depend on `ordinal()`
 
-Not breaking: a new overload, a new `default` interface method, a new enum
-constant at the end, a widened return type on a `final` method.
+- a return type changed at all, widened included. The return type is part of
+  the method descriptor, so existing compiled callers stop linking
+
+Not breaking: a new overload, a new `default` interface method, a new type, a
+new enum constant at the end of the list.
 
 The version comes from the `sdkVersion` Gradle property at release time, not
 from a file in the tree. The bump is therefore declared in `CHANGELOG.md` and in

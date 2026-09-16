@@ -11,8 +11,9 @@ Breaking, for this SDK:
 - a parameter or return type changed
 - a default parameter value changed. The value is compiled into the caller, so
   existing binaries keep the old default and new builds get the new one
-- a parameter added, even with a default, when callers may be using named
-  arguments after it, or when the method is used in an expression tree
+- a parameter added, even with a default value. The signature changes, so
+  existing compiled callers fail with `MissingMethodException`. Adding an
+  overload keeps them working
 - an abstract member added to a public abstract class or an interface without a
   default implementation
 - visibility narrowed, or a class or member made `sealed`
