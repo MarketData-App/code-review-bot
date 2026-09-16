@@ -696,3 +696,35 @@ def test_the_wait_is_bounded_and_gives_up_cleanly(tmp_path, transport, capsys, m
     )
     assert "fetched=false" in capsys.readouterr().out
     assert not home.exists()
+
+
+# --- the lease is sized against the work it protects ------------------------
+
+
+def test_the_ttl_outlasts_the_worst_case_review_and_the_wait_outlasts_the_ttl():
+    """Three numbers, and their ORDER is the invariant.
+
+    `Backend.review` is `for attempt in (1, 2)` around a call bounded by
+    `timeout_minutes`, so one backend can legitimately run for twice that. A
+    TTL shorter than that expires under a job still working and hands the
+    credential to a second one. And a wait shorter than the TTL gives up just
+    before a dead holder's lease would have freed itself.
+    """
+    for cap in (5, 15, 30):
+        ttl, wait = cli._lease_minutes({"timeout_minutes": cap})
+        worst_case_review = 2 * cap
+        assert ttl > worst_case_review, f"ttl {ttl} must outlast a {worst_case_review}m review"
+        assert wait > ttl, f"wait {wait} must outlast the ttl {ttl}"
+
+
+def test_an_unreadable_policy_still_sizes_the_lease_from_the_shipped_default():
+    ttl, wait = cli._lease_minutes(None)
+    assert (ttl, wait) == (35.0, 40.0)
+
+
+def test_fallback_mode_with_codex_second_does_not_borrow():
+    # Under `fallback` Codex runs only when the backend before it fails, which
+    # is rare. Holding the org-wide lease for every such review would starve
+    # the repositories that reach Codex on every run.
+    assert cli._will_run_codex({"backends": ["claude", "codex"], "mode": "fallback"}) is False
+    assert cli._will_run_codex({"backends": ["codex", "claude"], "mode": "fallback"}) is True

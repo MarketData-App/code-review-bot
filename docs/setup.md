@@ -110,7 +110,7 @@ borrowed `auth.json` reaches its runner. That is what makes the API key "take
 precedence" a fact rather than a hope: the two credentials never meet, so the
 Codex CLI is never asked to choose between them.
 
-Nothing about the credential can fail a review. Every failure the borrow step
+A credential the job cannot BORROW never fails a review. Every failure the borrow step
 can name exits 0 and reports `fetched=false`; the step also carries a shell
 fallback for the failures it cannot name, such as an empty organisation token.
 A review that cannot borrow runs with Claude alone.
