@@ -429,6 +429,10 @@ def derive_credential(codex_home: str, out: str, min_hours: float) -> int:
 
     target = Path(out)
     target.mkdir(parents=True, exist_ok=True)
+    # The directory, not only the file: a 0600 auth.json inside a 0755
+    # directory still tells every other account on the machine that it is
+    # there, and `credential_checkout` already holds $CODEX_HOME at 0700.
+    target.chmod(0o700)
     auth_path = target / "auth.json"
     auth_path.write_text(json.dumps(copy_out))
     auth_path.chmod(0o600)

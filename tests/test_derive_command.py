@@ -70,6 +70,16 @@ def test_the_copy_is_not_world_readable(tmp_path):
     assert stat.S_IMODE((out / "auth.json").stat().st_mode) == 0o600
 
 
+def test_the_directory_holding_the_copy_is_not_world_readable(tmp_path):
+    # A 0600 auth.json inside a 0755 directory still announces itself to every
+    # other account on the machine. `credential_checkout` already holds
+    # $CODEX_HOME at 0700; the keeper's output directory kept the umask
+    # default, which on the runner image is world-readable.
+    home, out = vault(tmp_path, hours_left=240), tmp_path / "out"
+    cli.main(["derive-credential", "--codex-home", str(home), "--out", str(out)])
+    assert stat.S_IMODE(out.stat().st_mode) == 0o700
+
+
 def test_it_refuses_to_publish_a_token_that_expires_too_soon(tmp_path, capsys):
     # Publishing a credential that dies mid-review is worse than publishing
     # none: a missing copy degrades to a Claude-only review, an expiring one

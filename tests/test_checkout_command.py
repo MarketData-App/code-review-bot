@@ -448,3 +448,23 @@ def test_a_missing_token_exits_before_the_command_can_report(tmp_path, monkeypat
             ]
         )
     assert caught.value.code == 2
+
+
+def test_the_borrowed_credential_directory_is_not_world_readable(tmp_path, transport):
+    free_lease(transport)
+    issue_copy(transport)
+    home = tmp_path / "codex-home"
+    cli.main(
+        [
+            "credential-checkout",
+            "--store",
+            STORE,
+            "--holder",
+            "sdk-py#100#551-1",
+            "--run-url",
+            "https://run/1",
+            "--codex-home",
+            str(home),
+        ]
+    )
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700
