@@ -70,6 +70,19 @@ def base_policy():
     return config.defaults()
 
 
+@pytest.fixture
+def proof_gated():
+    """`base_policy` with the proof gate ON.
+
+    The gate warns by default now -- it used to overwrite the verdict for every
+    pull request, which reported a 6/6 review with no findings as Blocked. The
+    tests below are about the gate itself, so they opt in explicitly.
+    """
+    pol = config.defaults()
+    pol["proof"]["required"] = True
+    return pol
+
+
 # --- skips -----------------------------------------------------------------
 
 
@@ -180,14 +193,14 @@ def test_require_agreement_still_honours_an_agreed_finding(base_policy):
 # --- the proof gate --------------------------------------------------------
 
 
-def test_missing_proof_blocks(base_policy):
-    d = policy.decide(make_result("ready", proof="missing"), make_pr(), base_policy, {})
+def test_missing_proof_blocks(proof_gated):
+    d = policy.decide(make_result("ready", proof="missing"), make_pr(), proof_gated, {})
     assert d.verdict == "blocked"
     assert "review: needs proof" in d.labels_add
 
 
-def test_insufficient_proof_blocks(base_policy):
-    d = policy.decide(make_result("ready", proof="insufficient"), make_pr(), base_policy, {})
+def test_insufficient_proof_blocks(proof_gated):
+    d = policy.decide(make_result("ready", proof="insufficient"), make_pr(), proof_gated, {})
     assert d.verdict == "blocked"
 
 
@@ -208,15 +221,15 @@ def test_proof_paths_limit_where_proof_is_required(base_policy):
     assert d.verdict == "ready"
 
 
-def test_proof_paths_still_require_proof_inside_them(base_policy):
-    base_policy["proof"]["paths"] = ["sdk/**"]
-    d = policy.decide(make_result("ready", proof="missing"), make_pr(), base_policy, {})
+def test_proof_paths_still_require_proof_inside_them(proof_gated):
+    proof_gated["proof"]["paths"] = ["sdk/**"]
+    d = policy.decide(make_result("ready", proof="missing"), make_pr(), proof_gated, {})
     assert d.verdict == "blocked"
 
 
-def test_the_proof_waived_label_lifts_the_gate(base_policy):
+def test_the_proof_waived_label_lifts_the_gate(proof_gated):
     pr = make_pr(labels=[policy.PROOF_WAIVED_LABEL])
-    d = policy.decide(make_result("ready", proof="missing"), pr, base_policy, {})
+    d = policy.decide(make_result("ready", proof="missing"), pr, proof_gated, {})
     assert d.verdict == "ready"
     assert any("waived" in r for r in d.reasons)
 
@@ -497,19 +510,19 @@ def test_only_the_documented_commands_are_bot_commands():
     assert not policy.is_bot_command("")
 
 
-def test_proof_paths_is_an_any_match_over_the_whole_pull_request(base_policy):
+def test_proof_paths_is_an_any_match_over_the_whole_pull_request(proof_gated):
     # Not a per-file filter. One matching file switches the gate on for the
     # whole pull request, including the files that do not match. The two path
     # options use opposite quantifiers: proof.paths is ANY, auto_approve_paths
     # is ALL.
-    base_policy["proof"]["paths"] = ["src/**"]
+    proof_gated["proof"]["paths"] = ["src/**"]
     pr = make_pr(
         changed_files=[
             {"path": "README.md", "status": "modified", "additions": 1, "deletions": 0},
             {"path": "src/client.py", "status": "modified", "additions": 1, "deletions": 0},
         ]
     )
-    assert policy.proof_applies(pr, base_policy) is True
+    assert policy.proof_applies(pr, proof_gated) is True
 
 
 def test_proof_paths_is_a_floor_not_a_filter(base_policy):
@@ -525,3 +538,46 @@ def test_proof_paths_is_a_floor_not_a_filter(base_policy):
     assert policy.proof_applies(pr, base_policy) is False
     decision = policy.decide(make_result("ready", proof="missing"), pr, base_policy, {})
     assert decision.verdict == "ready"
+
+
+# --- missing proof warns; it does not block --------------------------------
+
+
+def test_missing_proof_does_not_block_by_default():
+    """The model's verdict stands; the ask goes in the comment, not the gate.
+
+    Measured on the first three real reviews this bot produced: sdk-py #122
+    scored patch 6/6 with ZERO findings and was still reported Blocked, because
+    `proof_unmet` overwrote the verdict outright. A reviewer that blocks every
+    pull request regardless of quality gets ignored, which is worse than none.
+    """
+    pol = config.defaults()
+    assert pol["proof"]["required"] is False
+    out = policy.decide(make_result(proof="missing"), make_pr(), pol, {})
+    assert out.verdict == "ready"
+    assert out.conclusion == "success"
+    assert not any("runtime evidence" in r for r in out.reasons)
+
+
+def test_a_repository_can_still_opt_into_blocking_on_missing_proof():
+    pol = config.load("proof:\n  required: true\n")
+    out = policy.decide(make_result(proof="missing"), make_pr(), pol, {})
+    assert out.verdict == "blocked"
+    assert any("runtime evidence" in r for r in out.reasons)
+
+
+def test_opting_in_still_honours_the_paths_floor():
+    pol = config.load("proof:\n  required: true\n  paths: ['src/money/**']\n")
+    untouched = make_pr(
+        changed_files=[{"path": "README.md", "status": "modified", "additions": 1, "deletions": 0}]
+    )
+    out = policy.decide(make_result(proof="missing"), untouched, pol, {})
+    assert out.verdict == "ready"
+
+
+def test_blocking_findings_still_block_without_the_proof_gate():
+    # Turning the proof gate down must not turn the review down.
+    out = policy.decide(
+        make_result(proof="missing", severities=("blocking",)), make_pr(), config.defaults(), {}
+    )
+    assert out.verdict != "ready"

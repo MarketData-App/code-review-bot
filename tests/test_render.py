@@ -107,15 +107,35 @@ def test_the_comment_carries_the_marker(parts):
 def test_the_verdict_headline_is_first(parts):
     body = render.render(*parts)
     assert body.lstrip().splitlines()[0].startswith("##")
-    assert "Blocked" in body.splitlines()[0]  # proof is missing, so the gate blocks
+    # Missing proof WARNS by default now, so the model's own verdict stands
+    # rather than being overwritten. What matters is that it is not Blocked.
+    assert "Blocked" not in body.splitlines()[0]
+
+
+def gated_parts():
+    """The same fixture with the proof gate opted in, which repos may do."""
+    pol = config.defaults()
+    pol["proof"]["required"] = True
+    result = make_result()
+    decisions = policy.decide(result, make_pr(), pol, {})
+    since = findings.since_last_review([], result["findings"])
+    return result, META, pol, decisions, since, {}
+
+
+def test_a_repository_that_opts_into_the_proof_gate_still_renders_blocked():
+    body = render.render(*gated_parts())
+    assert "Blocked" in body.splitlines()[0]
+    assert "runtime evidence is missing" in body
 
 
 def test_the_summary_is_present(parts):
     assert "Adds a retry to the candles fetch." in render.render(*parts)
 
 
-def test_the_reasons_are_listed(parts):
-    assert "runtime evidence is missing" in render.render(*parts)
+def test_the_reasons_are_listed():
+    # The reasons list is what carries a gate's explanation, so assert it on a
+    # policy that actually has one enabled.
+    assert "runtime evidence is missing" in render.render(*gated_parts())
 
 
 def test_the_rating_row_renders_when_enabled(parts):
