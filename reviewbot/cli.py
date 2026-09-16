@@ -462,6 +462,12 @@ def _say_output(key: str, value: str) -> None:
             handle.write(f"{key}={value}\n")
 
 
+# Mirrors `timeout-minutes` in .github/workflows/review.yml. Kept here because
+# the wait has to be sized against it, and asserted equal by tests/test_workflow.py.
+JOB_BUDGET_MINUTES = 90.0
+JOB_OVERHEAD_MINUTES = 10.0
+
+
 def _target_policy(repo: str, pr_number: int, token: str) -> dict | None:
     """Will this repository's policy actually REACH the codex backend?
 
@@ -504,14 +510,14 @@ def _will_run_codex(policy: dict | None) -> bool:
     """Will the policy actually REACH the codex backend? None means unknown."""
     if policy is None:
         return True
-    backends = policy.get("backends") or []
-    if "codex" not in backends:
+    names = policy.get("backends") or []
+    if "codex" not in names:
         return False
     # `first` runs ready[0] only; `fallback` reaches a later backend solely when
     # the one before it FAILS, which is rare. In both cases codex listed after
     # another backend is not worth holding the org-wide lease for -- it would
     # starve the repositories that reach codex on every run.
-    if policy.get("mode") in ("first", "fallback") and backends[0] != "codex":
+    if policy.get("mode") in ("first", "fallback") and names[0] != "codex":
         return False
     return True
 
@@ -530,7 +536,24 @@ def _lease_minutes(policy: dict | None) -> tuple[float, float]:
     """
     cap = float((policy or {}).get("timeout_minutes") or 15)
     ttl = 2 * cap + 5
-    return ttl, ttl + 5
+    wait = ttl + 5
+    # The wait must also fit INSIDE the job's own budget alongside the review
+    # it is waiting to run. `JOB_BUDGET_MINUTES` mirrors review.yml's
+    # timeout-minutes; a policy with a large timeout_minutes would otherwise
+    # size a wait that the runner kills mid-queue, which looks like a failed
+    # review rather than a busy one.
+    # THE TWO GOALS CONFLICT ABOVE A CERTAIN timeout_minutes, and the arithmetic
+    # is worth writing down rather than rediscovering. We want
+    #   ttl  > 2*cap                 (outlast the work it protects)
+    #   wait > ttl                   (outlast a dead holder's lease)
+    #   wait + 2*cap + overhead <= budget   (fit inside the job)
+    # Substituting gives 2*cap < 80 - 2*cap, i.e. cap < 20 for a 90 minute
+    # budget. Beyond that, fitting the job wins: a wait the runner kills
+    # mid-queue looks like a failed review, while a wait shorter than the TTL
+    # only means a job can give up while a DEAD holder's lease is still
+    # ticking -- rare, and it degrades to a Claude review rather than a red one.
+    room = JOB_BUDGET_MINUTES - (2 * cap) - JOB_OVERHEAD_MINUTES
+    return ttl, max(0.0, min(wait, room))
 
 
 def credential_checkout(
