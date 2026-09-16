@@ -10,6 +10,10 @@ on:
       pr:
         description: Pull request number
         required: true
+      force:
+        description: Review a commit that has already been reviewed
+        type: boolean
+        default: false
 
 jobs:
   review:
@@ -39,6 +43,7 @@ jobs:
       # Only if this repository runs the Codex backend:
       # OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     with:
+      force: ${{ inputs.force }}
       # REQUIRED for a public repository, and for any repository outside the
       # MarketData-App organisation. The default is the org's self-hosted
       # runner, and its runner group is visibility=all with

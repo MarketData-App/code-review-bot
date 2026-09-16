@@ -581,3 +581,69 @@ def test_blocking_findings_still_block_without_the_proof_gate():
         make_result(proof="missing", severities=("blocking",)), make_pr(), config.defaults(), {}
     )
     assert out.verdict != "ready"
+
+
+# --- an unchanged head is not reviewed twice --------------------------------
+
+
+REVIEWED = {"reviewed_sha": "a" * 40, "revision": 3, "finding_ids": ["x1"]}
+
+
+def test_a_head_that_was_already_reviewed_is_skipped():
+    """Re-reviewing the same commit spends tokens to rewrite the same comment.
+
+    `same_sha` already existed but only chose the revision NUMBER -- it never
+    stopped the run. That was harmless while the trigger was manual, and stops
+    being harmless the moment `pull_request_target` is armed: its `edited` type
+    fires on a title or description tweak, at an unchanged commit.
+    """
+    pr = make_pr(head_sha="a" * 40, previous_state=REVIEWED)
+    assert should_skip_reason(pr) == "this commit has already been reviewed"
+
+
+def test_a_new_head_is_reviewed():
+    pr = make_pr(head_sha="b" * 40, previous_state=REVIEWED)
+    assert should_skip_reason(pr) is None
+
+
+def test_a_first_review_is_never_skipped():
+    pr = make_pr(head_sha="a" * 40, previous_state={})
+    assert should_skip_reason(pr) is None
+
+
+def test_a_bot_command_re_reviews_an_unchanged_head():
+    # Asking for it explicitly must always work, or a waiver cannot take
+    # effect until the author happens to push.
+    pr = make_pr(
+        head_sha="a" * 40,
+        previous_state=REVIEWED,
+        comments_since=[{"body": "@marketdata-code-review re-review"}],
+    )
+    assert should_skip_reason(pr) is None
+
+
+def test_a_waiver_re_reviews_an_unchanged_head():
+    pr = make_pr(
+        head_sha="a" * 40,
+        previous_state=REVIEWED,
+        comments_since=[{"body": "@marketdata-code-review waive 580fb334"}],
+    )
+    assert should_skip_reason(pr) is None
+
+
+def test_an_unrelated_comment_does_not_re_review():
+    pr = make_pr(
+        head_sha="a" * 40,
+        previous_state=REVIEWED,
+        comments_since=[{"body": "thanks, looks good"}],
+    )
+    assert should_skip_reason(pr) == "this commit has already been reviewed"
+
+
+def test_force_overrides_the_skip():
+    pr = make_pr(head_sha="a" * 40, previous_state=REVIEWED)
+    assert policy.should_skip(pr, config.defaults(), force=True) is None
+
+
+def should_skip_reason(pr):
+    return policy.should_skip(pr, config.defaults())

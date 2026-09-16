@@ -228,6 +228,7 @@ def run(
     pr_number: int | None = None,
     api=None,
     org_api=None,
+    force: bool = False,
 ) -> int:
     """One whole review. Returns the process exit code."""
     number = pr_number or pr_number_from_event(event)
@@ -291,7 +292,7 @@ def run(
             f"step passes REVIEWBOT_ORG_TOKEN.",
         )
 
-    skip = policy_mod.should_skip(pr, policy)
+    skip = policy_mod.should_skip(pr, policy, force=force)
     if skip:
         print(f"reviewbot: skipped, {skip}")
         return 0
@@ -749,6 +750,12 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument(
         "--checkout", required=True, help="path to the read-only checkout of the pull request head"
     )
+    runner.add_argument(
+        "--force",
+        action="store_true",
+        default=os.environ.get("REVIEWBOT_FORCE", "") == "true",
+        help="review even a commit that has already been reviewed",
+    )
 
     gater = sub.add_parser(
         "gate", help="decide whether this pull request may be reviewed, before any checkout"
@@ -873,6 +880,7 @@ def main(argv: list[str] | None = None) -> int:
             checkout=args.checkout,
             pr_number=args.pr,
             org_api=GitHub(args.repo, org_token) if org_token else None,
+            force=args.force,
         )
     except Exception:  # the job must fail loudly, never silently
         traceback.print_exc()

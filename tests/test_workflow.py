@@ -485,3 +485,10 @@ def test_the_job_budget_the_cli_assumes_matches_the_workflow():
     from reviewbot import cli
 
     assert REVIEW["jobs"]["review"]["timeout-minutes"] == cli.JOB_BUDGET_MINUTES
+
+
+def test_the_force_input_reaches_the_review_step():
+    # A skip you cannot override is a trap: `waive` and a deliberate re-review
+    # both need a way back in.
+    assert REVIEW[ON]["workflow_call"]["inputs"]["force"]["default"] is False
+    assert "inputs.force" in step("Run the review")["env"]["REVIEWBOT_FORCE"]
