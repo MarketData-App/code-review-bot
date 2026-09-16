@@ -730,6 +730,123 @@ def credential_checkin(store: str, holder: str, codex_home: str, token: str) -> 
     return 0
 
 
+def _as_utc(value, label: str):
+    """An ISO-8601 timestamp from the store, as an aware UTC datetime.
+
+    A naive timestamp is read AS UTC rather than refused, for the same reason
+    `credentials._held` does it: the bot only ever writes an aware, UTC
+    isoformat, so a naive one came from a hand edit and comparing it as UTC is
+    both answerable and honest about its intent. Refusing instead would make
+    the alarm fire on a cosmetic difference.
+    """
+    import datetime as _dt
+
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"the published meta.json has no {label}")
+    try:
+        when = _dt.datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"the published {label} is not a timestamp: {value!r}") from exc
+    return when.replace(tzinfo=_dt.UTC) if when.tzinfo is None else when
+
+
+def credential_audit(
+    store: str, token: str, warn_hours: float, stale_hours: float, meta_file: str = ""
+) -> int:
+    """Is the derived credential the store publishes still good? 0 yes, 1 no.
+
+    An alarm for a scheduled keeper workflow, so it NEVER raises: every failure
+    path prints a reason, reports `healthy=false`, and returns 1. A traceback
+    here is an alarm that did not fire.
+
+    Two questions, and the second is the one worth having. The expiry check
+    catches a token that is about to die. The staleness check catches a keeper
+    that has SILENTLY STOPPED -- the failure this command exists for. A keeper
+    that died two days ago left behind a credential that is still perfectly
+    valid for days, so nothing in the review path notices and nothing complains
+    until the token finally expires, mid-review, long after the cause. Asking
+    "when was this last published?" turns that into an alarm within hours.
+
+    It reads `codex/meta.json` and never `codex/auth.json`. The alarm decides
+    from the metadata alone; putting a usable credential into a scheduled job
+    that has no use for one only widens where it can leak.
+
+    Two sources, exactly one used. `meta_file` is a local path, and exists
+    because the keeper workflow runs in a repository whose GITHUB_TOKEN cannot
+    read the private store, while it already holds a deploy-key clone of it. It
+    can therefore hand over the file. A second credential minted for an alarm
+    costs more than a flag does.
+    """
+    import datetime as _dt
+    from pathlib import Path
+
+    from reviewbot import credentials
+
+    healthy = False
+    try:
+        if meta_file:
+            text = Path(meta_file).read_text()
+        else:
+            text = _store_api(store, token).file_at_ref(
+                credentials.META_PATH, credentials.ISSUE_BRANCH
+            )
+        if not text:
+            print(f"reviewbot credential-audit: the store publishes no {credentials.META_PATH}")
+            return 1
+
+        body = json.loads(text)
+        # `json.loads("5")` succeeds and the result has no `.get`, the same
+        # trap `credential_checkout` guards against on the credential itself.
+        if not isinstance(body, dict):
+            print("reviewbot credential-audit: the published meta.json is not an object")
+            return 1
+
+        expires = _as_utc(body.get("expires_at"), "expires_at")
+        published = _as_utc(body.get("published_at"), "published_at")
+        _say_output("expires_at", expires.isoformat())
+        _say_output("published_at", published.isoformat())
+
+        now = _dt.datetime.now(_dt.UTC)
+        left = (expires - now).total_seconds() / 3600
+        age = (now - published).total_seconds() / 3600
+        _say_output("hours_left", f"{left:.1f}")
+
+        if left < warn_hours:
+            print(
+                f"reviewbot credential-audit: the published access token expires in "
+                f"{left:.1f}h ({expires.isoformat()}), under the {warn_hours}h floor"
+            )
+            return 1
+        if age > stale_hours:
+            print(
+                f"reviewbot credential-audit: nothing has been published for {age:.1f}h "
+                f"(last at {published.isoformat()}), over the {stale_hours}h floor; "
+                f"the keeper has stopped"
+            )
+            return 1
+
+        healthy = True
+        print(
+            f"reviewbot credential-audit: healthy, {left:.1f}h of token life left, "
+            f"published {age:.1f}h ago"
+        )
+        return 0
+    except Exception as exc:
+        # One backstop over every source: a store that 500s, a file that is not
+        # there, JSON that does not parse, a timestamp that does not read. The
+        # alarm reports them all the same way, because they all mean the same
+        # thing -- nobody can show that the published credential is good.
+        print(
+            f"reviewbot credential-audit: cannot read the published credential's "
+            f"metadata: {type(exc).__name__}: {scrub(str(exc))}"
+        )
+        return 1
+    finally:
+        # In `finally`, so the key the workflow branches on is written on every
+        # path out of this function, including the backstop above.
+        _say_output("healthy", "true" if healthy else "false")
+
+
 def main(argv: list[str] | None = None) -> int:
     """`reviewbot run --event <path> [--pr N]`."""
     parser = argparse.ArgumentParser(prog="reviewbot")
@@ -777,6 +894,26 @@ def main(argv: list[str] | None = None) -> int:
         help="refuse to publish a token with less life than this",
     )
 
+    auditor = sub.add_parser(
+        "credential-audit", help="is the credential the store publishes still good?"
+    )
+    auditor.add_argument("--store", default="", help="owner/name of the credential store")
+    auditor.add_argument(
+        "--meta-file", default="", help="read the published meta.json from a local path instead"
+    )
+    auditor.add_argument(
+        "--warn-hours",
+        type=float,
+        default=72.0,
+        help="fail when the published access token has less life than this",
+    )
+    auditor.add_argument(
+        "--stale-hours",
+        type=float,
+        default=36.0,
+        help="fail when nothing has been published for longer than this",
+    )
+
     checkout = sub.add_parser("credential-checkout", help="borrow the Codex credential")
     checkout.add_argument("--store", required=True, help="owner/name of the credential store")
     checkout.add_argument("--holder", required=True, help="who is taking the lease")
@@ -814,6 +951,30 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "derive-credential":
         return derive_credential(args.codex_home, args.out, args.min_hours)
+
+    if args.command == "credential-audit":
+        # Dispatched above the token gate, and its own usage errors are
+        # PRINTED rather than raised through `parser.error`. This command is an
+        # alarm: the `SystemExit(2)` argparse raises is what forced every other
+        # store command's workflow step to carry a `|| echo ...=false`
+        # fallback, and an alarm that exits by exception is an alarm that did
+        # not fire. The exit code still matches `parser.error`'s 2, so a
+        # configuration mistake stays distinguishable from an unhealthy
+        # credential, which is 1.
+        if bool(args.store) == bool(args.meta_file):
+            print("reviewbot credential-audit: give exactly one of --store or --meta-file")
+            return 2
+        audit_token = ""
+        if args.store:
+            audit_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("REVIEWBOT_TOKEN") or ""
+            if not audit_token:
+                print("reviewbot credential-audit: GITHUB_TOKEN is not set")
+                return 2
+        # --meta-file needs no token at all, which is the point of it: the
+        # keeper workflow's GITHUB_TOKEN cannot read the private store.
+        return credential_audit(
+            args.store, audit_token, args.warn_hours, args.stale_hours, args.meta_file
+        )
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("REVIEWBOT_TOKEN")
     if not token:
