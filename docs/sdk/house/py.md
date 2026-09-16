@@ -1,4 +1,4 @@
-## sdk-py house rules
+# sdk-py house rules
 
 ## The four output formats must agree
 
@@ -63,7 +63,7 @@ Every resource method answers in `INTERNAL`, `JSON`, `CSV` or `DATAFRAME`.
 - A deprecated surface that is about to be deleted does not need refactoring.
   Say that rather than asking for the cleanup.
 
-## Tests
+## Tests, in this repository
 
 - A behaviour test drives the public client with `respx`, through
   `client.<resource>.<method>`. A test that only builds a model by hand does

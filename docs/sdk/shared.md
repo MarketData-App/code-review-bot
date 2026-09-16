@@ -24,7 +24,8 @@ breaking API change can also need no SDK change at all.
 
 **Do not form an opinion. Compare.**
 
-Build one row for every public symbol the diff touches:
+Section 8 says what counts as a public symbol in this language, and what
+breaks it. Build one row for every public symbol the diff touches:
 
 | symbol | before | after | breaking |
 |--------|--------|-------|----------|

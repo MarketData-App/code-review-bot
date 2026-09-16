@@ -1,4 +1,4 @@
-## The public surface of this SDK
+## 8. The public surface of this SDK
 
 The surface is every `public` and `protected` type and member under
 `src/MarketDataApp`. The package is published to NuGet. `src/MarketDataApp.Tests`

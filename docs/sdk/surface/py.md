@@ -1,4 +1,4 @@
-## The public surface of this SDK
+## 8. The public surface of this SDK
 
 The surface is every name in `src/marketdata/` that does not start with `_`,
 plus everything re-exported from `src/marketdata/__init__.py`. The package is

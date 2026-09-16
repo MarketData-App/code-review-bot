@@ -1,4 +1,4 @@
-## The public surface of this SDK
+## 8. The public surface of this SDK
 
 The surface is every exported identifier, meaning every name with an initial
 capital, in `marketdata/` and its subpackages. `internal/` is not surface: the

@@ -1,4 +1,4 @@
-## The public surface of this SDK
+## 8. The public surface of this SDK
 
 The surface is every name exported from `src/index.ts`, and the types those
 names carry into the generated `dist/index.d.ts`. The package is installed by

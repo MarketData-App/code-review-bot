@@ -1,4 +1,4 @@
-## The public surface of this SDK
+## 8. The public surface of this SDK
 
 The surface is every `public` and `protected` type, method, constructor and
 field under `src/main/java`. The artifact is published to Maven Central as

@@ -1,4 +1,4 @@
-## The public surface of this SDK
+## 8. The public surface of this SDK
 
 The surface is every `public` and `protected` member of every class, interface,
 trait and enum under `src/`. `protected` counts: customers subclass
