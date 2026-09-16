@@ -53,6 +53,14 @@ on:
           value to copy.
         type: string
         default: '4955329'
+      credential-store:
+        description: >
+          The private repository holding the Codex credential this job
+          borrows. Read with the ORGANISATION App token, the same one the
+          membership check uses, so a caller outside the organisation needs
+          nothing extra. Set it to '' to turn borrowing off for a repository.
+        type: string
+        default: MarketData-App/code-review-credentials
     secrets:
       CODE_REVIEW_APP_ID:
         # Optional: the app-id input above carries the same value. Set this
@@ -228,11 +236,32 @@ jobs:
           persist-credentials: false
           submodules: false
 
+      # BORROWED, NOT STORED. The real credential never leaves skynet; what
+      # lands here is a copy whose refresh token is a placeholder, so this job
+      # cannot refresh anything and cannot cause `refresh_token_reused`
+      # however many reviews run at once. See
+      # docs/superpowers/specs/2026-09-16-codex-credential-leasing-design.md.
+      #
+      # CODEX_HOME is under RUNNER_TEMP on purpose. The self-hosted runner is
+      # not --ephemeral, so anything written to a durable path would wait
+      # there for the next job, which may belong to another repository.
+      - name: Borrow the Codex credential
+        id: codex
+        if: steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''
+        env:
+          GITHUB_TOKEN: ${{ steps.org-token.outputs.token }}
+        run: |
+          uv run --project bot reviewbot credential-checkout \
+            --store "${{ inputs.credential-store }}" \
+            --holder "${{ github.repository }}#${{ steps.pr.outputs.number }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --codex-home "$RUNNER_TEMP/codex-home"
+
       - name: Install the model CLIs
         if: steps.gate.outputs.trusted == 'true'
         env:
           HAVE_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          HAVE_CODEX: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAVE_CODEX: ${{ steps.codex.outputs.fetched == 'true' || secrets.OPENAI_API_KEY != '' }}
         run: |
           set -eu
           if [ "$HAVE_CLAUDE" = "true" ] && ! command -v claude >/dev/null; then
@@ -252,6 +281,7 @@ jobs:
           REVIEWBOT_TRUSTED_AUTHORS: ${{ inputs.trusted-authors }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_HOME: ${{ runner.temp }}/codex-home
           # The same organisation token the gate gets. Without it this step
           # cannot make the membership call, falls back to author_association,
           # and refuses every organisation member on a user-account
@@ -264,3 +294,17 @@ jobs:
             --pr "${{ steps.pr.outputs.number }}" \
             --repo "$GITHUB_REPOSITORY" \
             --checkout "$GITHUB_WORKSPACE/${{ inputs.checkout-path }}"
+
+      # The lease expires on its own after 20 minutes, so a job killed by
+      # cancel-in-progress strands nothing. This step is still worth having:
+      # it removes the credential from a runner whose filesystem persists, and
+      # it frees the lease immediately rather than in twenty minutes.
+      - name: Return the Codex credential
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ steps.org-token.outputs.token }}
+        run: |
+          uv run --project bot reviewbot credential-checkin \
+            --store "${{ inputs.credential-store }}" \
+            --holder "${{ github.repository }}#${{ steps.pr.outputs.number }}" \
+            --codex-home "$RUNNER_TEMP/codex-home" || true

@@ -147,7 +147,16 @@ def test_every_step_after_the_gate_is_conditional_on_it():
     names = [(s.get("name") or "") for s in steps()]
     gate_at = names.index("Refuse a pull request from outside the organisation")
     for item in steps()[gate_at + 1 :]:
-        assert item.get("if") == "steps.gate.outputs.trusted == 'true'", item.get("name")
+        name = item.get("name") or ""
+        condition = item.get("if")
+        if name == "Return the Codex credential":
+            # Always cleans up, whatever happened earlier in the job.
+            assert condition == "always()", name
+        else:
+            assert condition in (
+                "steps.gate.outputs.trusted == 'true'",
+                "steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''",
+            ), name
 
 
 def test_the_gate_step_runs_the_tested_command():
@@ -311,3 +320,39 @@ def test_both_halves_get_the_same_organisation_token():
         assert step(name)["env"]["REVIEWBOT_ORG_TOKEN"] == (
             "${{ steps.org-token.outputs.token }}"
         ), name
+
+
+# --- the borrowed Codex credential -----------------------------------------
+
+
+def test_the_credential_is_borrowed_only_after_the_gate():
+    # The store token is the org App token. Borrowing before the gate would
+    # hand a credential to a job started by an outsider's pull request.
+    names = [(s.get("name") or "") for s in steps()]
+    gate = next(i for i, n in enumerate(names) if "Refuse a pull request" in n)
+    borrow = next(i for i, n in enumerate(names) if "Borrow the Codex credential" in n)
+    assert gate < borrow
+
+
+def test_the_credential_is_written_to_a_job_scoped_codex_home():
+    # The self-hosted runner is deliberately not --ephemeral, so its filesystem
+    # persists between jobs. A credential written anywhere durable would wait
+    # there for the next job, possibly from another repository.
+    borrow = step("Borrow the Codex credential")
+    assert "$RUNNER_TEMP/codex-home" in borrow["run"]
+
+
+def test_the_credential_is_returned_whatever_happens():
+    give_back = step("Return the Codex credential")
+    assert give_back["if"] == "always()"
+    assert give_back is steps()[-1]
+
+
+def test_the_codex_cli_is_installed_when_either_credential_is_present():
+    install = step("Install the model CLIs")
+    assert "steps.codex.outputs.fetched" in install["env"]["HAVE_CODEX"]
+    assert "OPENAI_API_KEY" in install["env"]["HAVE_CODEX"]
+
+
+def test_the_review_step_is_told_where_the_borrowed_credential_is():
+    assert "codex-home" in step("Run the review")["env"]["CODEX_HOME"]
