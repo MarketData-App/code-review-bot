@@ -392,6 +392,54 @@ def _safe_gather(api, number: int, policy: dict):
         return None
 
 
+def derive_credential(codex_home: str, out: str, min_hours: float) -> int:
+    """Write the copy every review job borrows. Runs on skynet, in the keeper.
+
+    It refuses rather than publishing a credential that will expire during a
+    review: a missing copy degrades to a Claude-only review, and an expiring
+    one fails in the middle of a job.
+    """
+    import datetime as _dt
+    from pathlib import Path
+
+    from reviewbot import credentials
+
+    source = Path(codex_home) / "auth.json"
+    try:
+        auth = json.loads(source.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"reviewbot derive-credential: cannot read {source}: {exc}")
+        return 1
+
+    try:
+        expires = credentials.access_token_expiry(auth)
+        copy_out = credentials.derive(auth)
+    except credentials.CredentialError as exc:
+        print(f"reviewbot derive-credential: {exc}")
+        return 1
+
+    now = _dt.datetime.now(_dt.UTC)
+    left = (expires - now).total_seconds() / 3600
+    if left < min_hours:
+        print(
+            f"reviewbot derive-credential: refusing to publish, the access token "
+            f"expires in {left:.1f}h ({expires.isoformat()}), under the {min_hours}h floor"
+        )
+        return 1
+
+    target = Path(out)
+    target.mkdir(parents=True, exist_ok=True)
+    auth_path = target / "auth.json"
+    auth_path.write_text(json.dumps(copy_out))
+    auth_path.chmod(0o600)
+    (target / "meta.json").write_text(
+        json.dumps({"expires_at": expires.isoformat(), "published_at": now.isoformat()}, indent=2)
+        + "\n"
+    )
+    print(f"reviewbot derive-credential: published, the access token expires {expires.isoformat()}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """`reviewbot run --event <path> [--pr N]`."""
     parser = argparse.ArgumentParser(prog="reviewbot")
@@ -426,7 +474,22 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("GITHUB_REPOSITORY"),
         help="owner/name of the repository",
     )
+
+    deriver = sub.add_parser(
+        "derive-credential", help="write the derived copy the review jobs borrow"
+    )
+    deriver.add_argument("--codex-home", required=True, help="the vault's CODEX_HOME")
+    deriver.add_argument("--out", required=True, help="where to write auth.json and meta.json")
+    deriver.add_argument(
+        "--min-hours",
+        type=float,
+        default=48.0,
+        help="refuse to publish a token with less life than this",
+    )
     args = parser.parse_args(argv)
+
+    if args.command == "derive-credential":
+        return derive_credential(args.codex_home, args.out, args.min_hours)
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("REVIEWBOT_TOKEN")
     if not token:
