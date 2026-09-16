@@ -5,11 +5,14 @@ small Python script named `claude` or `codex` on PATH and asserts against
 what the backend does with its output.
 """
 
+import json
 import stat
 import sys
 from pathlib import Path
 
 import pytest
+
+from reviewbot import github
 
 VALID_RESULT = {
     "summary": "Adds a retry to the candles fetch. Contained and readable.",
@@ -96,3 +99,25 @@ if out:
 print(json.dumps({{"type": "turn.completed", "usage": {{"input_tokens": 10}}}}))
 sys.exit({exit_code})
 """
+
+
+class FakeTransport:
+    """Answers by (method, path); records every call it is given."""
+
+    def __init__(self):
+        self.routes, self.calls = {}, []
+
+    def add(self, method, path, status=200, data=None, text=""):
+        self.routes.setdefault((method, path), []).append(
+            github.Response(status=status, data=data, text=text)
+        )
+
+    def __call__(self, method, url, headers, body):
+        path = url.replace("https://api.github.com", "")
+        self.calls.append(
+            {"method": method, "path": path, "body": json.loads(body) if body else None}
+        )
+        queue = self.routes.get((method, path))
+        if not queue:
+            raise AssertionError(f"no fake route for {method} {path}")
+        return queue.pop(0) if len(queue) > 1 else queue[0]

@@ -11,8 +11,9 @@ import datetime
 import json
 
 import pytest
+from conftest import FakeTransport
 
-from reviewbot import credentials
+from reviewbot import credentials, github
 
 
 def b64(raw: bytes) -> str:
@@ -81,3 +82,94 @@ def test_a_malformed_access_token_raises_rather_than_reading_as_far_future():
     source["tokens"]["access_token"] = "not-a-jwt"
     with pytest.raises(credentials.CredentialError, match="access_token"):
         credentials.access_token_expiry(source)
+
+
+# --- the lease -------------------------------------------------------------
+
+NOW = datetime.datetime(2026, 9, 16, 14, 0, tzinfo=datetime.UTC)
+STORE = "MarketData-App/code-review-credentials"
+
+
+@pytest.fixture
+def store():
+    transport = FakeTransport()
+    api = github.GitHub(STORE, "ghs_" + "T" * 36, transport=transport, sleep=lambda s: None)
+    return api, transport
+
+
+def lease_body(transport, holder, expires_at, sha="blob111"):
+    transport.add(
+        "GET",
+        f"/repos/{STORE}/contents/codex/lease.json?ref=main",
+        data={
+            "encoding": "base64",
+            "content": base64.b64encode(
+                json.dumps({"holder": holder, "expires_at": expires_at}).encode()
+            ).decode(),
+            "sha": sha,
+        },
+    )
+
+
+def test_a_free_lease_is_acquired(store):
+    api, transport = store
+    lease_body(transport, None, None)
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    assert credentials.acquire(api, "sdk-py#100", "https://run/1", NOW) is True
+    written = json.loads(base64.b64decode(transport.calls[-1]["body"]["content"]))
+    assert written["holder"] == "sdk-py#100"
+    assert written["expires_at"] == "2026-09-16T14:20:00+00:00"
+
+
+def test_a_lease_held_by_another_job_is_refused(store):
+    api, transport = store
+    lease_body(transport, "sdk-go#41", "2026-09-16T14:10:00+00:00")
+    assert credentials.acquire(api, "sdk-py#100", "https://run/1", NOW) is False
+    assert [c["method"] for c in transport.calls] == ["GET"]
+
+
+def test_an_expired_lease_is_taken_over(store):
+    # This is what makes a cancelled job harmless: it leaves the lease held,
+    # and the next job simply takes it when the TTL has passed.
+    api, transport = store
+    lease_body(transport, "sdk-go#41", "2026-09-16T13:59:00+00:00")
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    assert credentials.acquire(api, "sdk-py#100", "https://run/1", NOW) is True
+
+
+def test_a_missing_lease_file_is_created(store):
+    api, transport = store
+    transport.add(
+        "GET", f"/repos/{STORE}/contents/codex/lease.json?ref=main", status=404, text="Not Found"
+    )
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    assert credentials.acquire(api, "sdk-py#100", "https://run/1", NOW) is True
+    assert "sha" not in transport.calls[-1]["body"]
+
+
+def test_losing_the_compare_and_swap_is_not_acquiring(store):
+    api, transport = store
+    lease_body(transport, None, None)
+    transport.add(
+        "PUT", f"/repos/{STORE}/contents/codex/lease.json", status=409, text="does not match"
+    )
+    assert credentials.acquire(api, "sdk-py#100", "https://run/1", NOW) is False
+
+
+def test_release_frees_the_lease(store):
+    api, transport = store
+    lease_body(transport, "sdk-py#100", "2026-09-16T14:20:00+00:00")
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    credentials.release(api, "sdk-py#100")
+    written = json.loads(base64.b64decode(transport.calls[-1]["body"]["content"]))
+    assert written["holder"] is None
+
+
+def test_release_leaves_a_lease_another_job_now_holds(store):
+    # Our TTL expired, another job took the lease, and only then did our
+    # `if: always()` step run. Freeing it here would hand a second job the
+    # credential while the first is still using it.
+    api, transport = store
+    lease_body(transport, "sdk-go#41", "2026-09-16T14:30:00+00:00")
+    credentials.release(api, "sdk-py#100")
+    assert [c["method"] for c in transport.calls] == ["GET"]

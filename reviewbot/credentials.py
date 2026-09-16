@@ -68,3 +68,66 @@ def access_token_expiry(auth: dict) -> datetime.datetime:
     if not isinstance(exp, int):
         raise CredentialError("the access_token carries no exp claim")
     return datetime.datetime.fromtimestamp(exp, datetime.UTC)
+
+
+def _read_lease(api) -> tuple[dict, str | None]:
+    text, sha = api.file_with_sha(LEASE_PATH, LEASE_BRANCH)
+    if text is None:
+        return {}, None
+    try:
+        body = json.loads(text)
+    except json.JSONDecodeError:
+        # A lease nobody can parse must not wedge every review forever. Treat
+        # it as free; the write below replaces it with something readable.
+        return {}, sha
+    return (body if isinstance(body, dict) else {}), sha
+
+
+def _held(lease: dict, now: datetime.datetime) -> bool:
+    if not lease.get("holder"):
+        return False
+    expires = lease.get("expires_at")
+    if not isinstance(expires, str):
+        return True
+    try:
+        when = datetime.datetime.fromisoformat(expires)
+    except ValueError:
+        return True
+    return when > now
+
+
+def acquire(api, holder: str, run_url: str, now: datetime.datetime, ttl_minutes: int = 20) -> bool:
+    """Take the lease, or return False. Never raises for an ordinary loss.
+
+    The lock is the contents API's own compare-and-swap: the lease is read with
+    its blob sha and written back under it, so a second job racing for the same
+    lease gets a 409 and loses. No lock service is involved.
+    """
+    lease, sha = _read_lease(api)
+    if _held(lease, now):
+        return False
+    body = {
+        "holder": holder,
+        "run_url": run_url,
+        "acquired_at": now.isoformat(),
+        "expires_at": (now + datetime.timedelta(minutes=ttl_minutes)).isoformat(),
+    }
+    return api.put_file(
+        LEASE_PATH, json.dumps(body, indent=2) + "\n", f"lease taken by {holder}", LEASE_BRANCH, sha
+    )
+
+
+def release(api, holder: str) -> None:
+    """Free the lease, but only if we still hold it.
+
+    A job whose TTL expired may find another job already holding the lease by
+    the time its `if: always()` step runs. Freeing it then would hand a second
+    job the credential while the first is still working.
+    """
+    lease, sha = _read_lease(api)
+    if lease.get("holder") != holder:
+        return
+    body = {"holder": None, "run_url": None, "acquired_at": None, "expires_at": None}
+    api.put_file(
+        LEASE_PATH, json.dumps(body, indent=2) + "\n", f"lease freed by {holder}", LEASE_BRANCH, sha
+    )
