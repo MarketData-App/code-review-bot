@@ -30,6 +30,10 @@ VALID = {
     "proof": {"status": "missing", "ask": "Show the retry firing once against a 503."},
     "verdict": {"value": "needs_changes", "reason": "One blocking finding."},
     "rating": {"patch": 3, "proof": 2},
+    # Both required since the schema went strict: OpenAI rejects a schema whose
+    # `required` omits any key, so declining is null, not an absent key.
+    "praise": [],
+    "decision": None,
 }
 
 

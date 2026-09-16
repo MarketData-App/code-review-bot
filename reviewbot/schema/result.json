@@ -3,7 +3,15 @@
   "title": "Code review result",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "findings", "proof", "verdict", "rating"],
+  "required": [
+    "summary",
+    "findings",
+    "proof",
+    "verdict",
+    "rating",
+    "decision",
+    "praise"
+  ],
   "properties": {
     "summary": {
       "type": "string",
@@ -14,24 +22,77 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["category", "severity", "confidence", "title", "body"],
+        "required": [
+          "file",
+          "line_start",
+          "line_end",
+          "category",
+          "severity",
+          "confidence",
+          "title",
+          "body",
+          "evidence"
+        ],
         "properties": {
           "file": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Repository-relative path, or null when the finding is not tied to one file."
           },
-          "line_start": {"type": ["integer", "null"], "minimum": 1},
-          "line_end": {"type": ["integer", "null"], "minimum": 1},
+          "line_start": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "line_end": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
           "category": {
             "type": "string",
-            "enum": ["correctness", "security", "contract", "tests", "docs", "style", "performance"]
+            "enum": [
+              "correctness",
+              "security",
+              "contract",
+              "tests",
+              "docs",
+              "style",
+              "performance"
+            ]
           },
-          "severity": {"type": "string", "enum": ["blocking", "should_fix", "nit"]},
-          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-          "title": {"type": "string", "description": "One line, under 80 characters."},
-          "body": {"type": "string", "description": "What is wrong and what to do about it."},
-          "evidence": {
+          "severity": {
             "type": "string",
+            "enum": [
+              "blocking",
+              "should_fix",
+              "nit"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "title": {
+            "type": "string",
+            "description": "One line, under 80 characters."
+          },
+          "body": {
+            "type": "string",
+            "description": "What is wrong and what to do about it."
+          },
+          "evidence": {
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "A file reference or a quoted line from the diff that shows the problem."
           }
         }
@@ -40,14 +101,25 @@
     "proof": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status"],
+      "required": [
+        "status",
+        "ask"
+      ],
       "properties": {
         "status": {
           "type": "string",
-          "enum": ["sufficient", "missing", "insufficient", "not_applicable"]
+          "enum": [
+            "sufficient",
+            "missing",
+            "insufficient",
+            "not_applicable"
+          ]
         },
         "ask": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Plain-language request for the runtime evidence that is missing."
         }
       }
@@ -55,31 +127,76 @@
     "verdict": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["value", "reason"],
+      "required": [
+        "value",
+        "reason"
+      ],
       "properties": {
-        "value": {"type": "string", "enum": ["ready", "needs_changes", "blocked"]},
-        "reason": {"type": "string"}
+        "value": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "needs_changes",
+            "blocked"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
       }
     },
     "rating": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["patch", "proof"],
+      "required": [
+        "patch",
+        "proof"
+      ],
       "properties": {
-        "patch": {"type": "integer", "minimum": 1, "maximum": 6},
-        "proof": {"type": "integer", "minimum": 1, "maximum": 6}
+        "patch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "proof": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        }
       }
     },
     "decision": {
-      "type": "object",
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
-      "required": ["question", "options", "recommendation"],
+      "required": [
+        "question",
+        "options",
+        "recommendation"
+      ],
       "properties": {
-        "question": {"type": "string"},
-        "options": {"type": "array", "items": {"type": "string"}, "minItems": 2},
-        "recommendation": {"type": "string"}
+        "question": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2
+        },
+        "recommendation": {
+          "type": "string"
+        }
       }
     },
-    "praise": {"type": "array", "items": {"type": "string"}}
+    "praise": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   }
 }

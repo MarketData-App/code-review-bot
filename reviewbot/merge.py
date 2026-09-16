@@ -31,14 +31,25 @@ MERGE_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["title", "body", "category", "severity", "confidence", "sources"],
+                # Every key, because OpenAI's strict mode rejects a schema
+                # whose `required` omits any property (measured: sdk-py run
+                # 35125915397). `evidence` is nullable so "none" stays sayable.
+                "required": [
+                    "title",
+                    "body",
+                    "category",
+                    "severity",
+                    "confidence",
+                    "evidence",
+                    "sources",
+                ],
                 "properties": {
                     "title": {"type": "string"},
                     "body": {"type": "string"},
                     "category": {"type": "string"},
                     "severity": {"type": "string"},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                    "evidence": {"type": "string"},
+                    "evidence": {"type": ["string", "null"]},
                     "sources": {
                         "type": "array",
                         "items": {"type": "integer", "minimum": 0},
@@ -256,6 +267,10 @@ def merge(results: list[BackendResult], policy: dict, unlocated_merger=None) -> 
             praise.append(item)
     out["praise"] = praise
 
+    # Always present, null when no backend raised one. The schema requires the
+    # key since it went strict, and consumers read it with truthiness, so null
+    # and absent mean the same thing to them but not to the validator.
+    out["decision"] = None
     for candidate in results:
         if candidate.result.get("decision"):
             out["decision"] = copy.deepcopy(candidate.result["decision"])
