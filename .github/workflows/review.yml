@@ -299,11 +299,16 @@ jobs:
           HAVE_CODEX: ${{ steps.codex.outputs.fetched == 'true' || secrets.OPENAI_API_KEY != '' }}
         run: |
           set -eu
+          # `|| true` on both: HAVE_CODEX is now true on every review that
+          # borrowed a credential, not only on the rare API-key repository, so
+          # a transient npm failure here would red every review. A missing CLI
+          # is already an ordinary outcome -- `probe()` returns False for it
+          # and the review runs with the backend that did install.
           if [ "$HAVE_CLAUDE" = "true" ] && ! command -v claude >/dev/null; then
-            npm install -g @anthropic-ai/claude-code
+            npm install -g @anthropic-ai/claude-code || true
           fi
           if [ "$HAVE_CODEX" = "true" ] && ! command -v codex >/dev/null; then
-            npm install -g @openai/codex
+            npm install -g @openai/codex || true
           fi
 
       - name: Run the review

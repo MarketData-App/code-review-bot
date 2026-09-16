@@ -448,3 +448,15 @@ def test_the_api_key_test_is_computed_where_secrets_can_be_read():
     )
     for name in ("Borrow the Codex credential", "Return the Codex credential"):
         assert "secrets." not in (step(name)["if"] or ""), name
+
+
+def test_a_failed_cli_install_does_not_fail_the_review():
+    # HAVE_CODEX used to be true only for the rare API-key repository. Now the
+    # store publishes a credential and it is true on every review, so a
+    # transient npm failure under `set -eu` would red every review. `probe()`
+    # already returns False for a CLI that is not installed.
+    install = step("Install the model CLIs")
+    lines = [ln.strip() for ln in install["run"].splitlines() if ln.strip().startswith("npm ")]
+    assert len(lines) == 2
+    for line in lines:
+        assert line.endswith("|| true"), line
