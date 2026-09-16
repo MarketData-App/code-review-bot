@@ -8,3 +8,7 @@ __pycache__/
 
 # Agent uploads. The App private key lands here; it must never be committed.
 .agentwatch/
+
+# Generated SDK review rules. The source is docs/sdk/; the copies live in
+# each SDK repository, not here.
+build/
