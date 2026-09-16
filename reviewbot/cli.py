@@ -19,6 +19,7 @@ from reviewbot import config, findings, merge, render
 from reviewbot import policy as policy_mod
 from reviewbot import result as result_mod
 from reviewbot.backends import base as backends
+from reviewbot.config import JOB_BUDGET_MINUTES, JOB_OVERHEAD_MINUTES
 from reviewbot.github import GitHub, GitHubError
 from reviewbot.redact import scrub
 
@@ -462,12 +463,6 @@ def _say_output(key: str, value: str) -> None:
             handle.write(f"{key}={value}\n")
 
 
-# Mirrors `timeout-minutes` in .github/workflows/review.yml. Kept here because
-# the wait has to be sized against it, and asserted equal by tests/test_workflow.py.
-JOB_BUDGET_MINUTES = 90.0
-JOB_OVERHEAD_MINUTES = 10.0
-
-
 def _target_policy(repo: str, pr_number: int, token: str) -> dict | None:
     """Will this repository's policy actually REACH the codex backend?
 
@@ -644,6 +639,27 @@ def credential_checkout(
             credentials.release(api, holder)
             _say_output("fetched", "false")
             return 0
+        # META_PATH exists so this question can be asked before the credential
+        # is written: an expired copy authenticates nothing, and borrowing it
+        # spends a lease and a review slot to reach a certain failure.
+        try:
+            meta_text = api.file_at_ref(credentials.META_PATH, credentials.ISSUE_BRANCH)
+            expires = json.loads(meta_text or "{}").get("expires_at")
+            if expires:
+                left = (
+                    _dt.datetime.fromisoformat(expires) - _dt.datetime.now(_dt.UTC)
+                ).total_seconds() / 60
+                if left <= 0:
+                    print(
+                        f"reviewbot: the issued credential expired at {expires}; not borrowing it"
+                    )
+                    credentials.release(api, holder)
+                    _say_output("fetched", "false")
+                    return 0
+                print(f"reviewbot: the issued credential has {left:.0f} minutes left")
+        except (GitHubError, ValueError, TypeError) as exc:
+            print(f"reviewbot: could not read the credential's expiry: {scrub(str(exc))}")
+
         if not text:
             print("reviewbot: the store holds no issued credential")
             credentials.release(api, holder)

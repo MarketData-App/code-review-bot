@@ -61,6 +61,17 @@ _NESTED_TYPES = {
 _defaults_cache: dict | None = None
 
 
+# The reusable workflow's `timeout-minutes`. It lives here because
+# `timeout_minutes` must be validated against it: `Backend.review` retries
+# once, so a policy asking for N minutes can legitimately spend 2N on the model
+# alone, and a policy allowed to exceed the job's own budget would be killed
+# mid-review with nothing to show. tests/test_workflow.py asserts these agree.
+JOB_BUDGET_MINUTES = 90.0
+JOB_OVERHEAD_MINUTES = 10.0
+# 2 * MAX + overhead must fit the budget, leaving room for a lease wait.
+MAX_TIMEOUT_MINUTES = 30.0
+
+
 class PolicyError(ValueError):
     """A policy file is malformed. The message names the key."""
 
@@ -157,6 +168,13 @@ def _validate(policy: dict) -> None:
     for key in ("max_diff_kb", "timeout_minutes"):
         if policy[key] < 1:
             raise PolicyError(f"{key} must be 1 or more")
+    if policy["timeout_minutes"] > MAX_TIMEOUT_MINUTES:
+        raise PolicyError(
+            f"timeout_minutes must be {MAX_TIMEOUT_MINUTES:g} or less: a review retries once, so "
+            f"{policy['timeout_minutes']} would allow {2 * policy['timeout_minutes']} minutes of "
+            f"model time against a {JOB_BUDGET_MINUTES:g} minute job budget, and the job would be "
+            f"killed mid-review"
+        )
     for key in (
         "ignore_paths",
         "ignore_authors",

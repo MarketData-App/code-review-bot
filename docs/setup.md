@@ -102,7 +102,13 @@ design, including what it costs and the condition that would replace it: a
 ChatGPT Business or Enterprise workspace supports Codex access tokens, which
 are finite and revocable, and would make all of this unnecessary.
 
-Turn it off for one repository with `with: { credential-store: '' }`.
+Three things stop a repository borrowing: `with: { credential-store: '' }` in
+the caller, an `OPENAI_API_KEY` secret (which takes precedence), and a policy
+that never reaches Codex. The last is the easy one to miss -- the shipped
+default `backends: [claude, codex]` with `mode: first` runs Claude and never
+invokes Codex, so the job declines the lease instead of holding one plan's
+credential for a backend that will not run. A repository that wants Codex puts
+it first, or sets `mode: all`.
 
 **A repository with its own `OPENAI_API_KEY` never borrows.** The borrow step
 is skipped when that secret is set, so such a repository takes no lease and no
