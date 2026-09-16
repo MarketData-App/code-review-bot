@@ -147,16 +147,8 @@ def test_every_step_after_the_gate_is_conditional_on_it():
     names = [(s.get("name") or "") for s in steps()]
     gate_at = names.index("Refuse a pull request from outside the organisation")
     for item in steps()[gate_at + 1 :]:
-        name = item.get("name") or ""
-        condition = item.get("if")
-        if name == "Return the Codex credential":
-            # Always cleans up, whatever happened earlier in the job.
-            assert condition == "always()", name
-        else:
-            assert condition in (
-                "steps.gate.outputs.trusted == 'true'",
-                "steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''",
-            ), name
+        condition = item.get("if") or ""
+        assert "steps.gate.outputs.trusted == 'true'" in condition, item.get("name")
 
 
 def test_the_gate_step_runs_the_tested_command():
@@ -343,8 +335,14 @@ def test_the_credential_is_written_to_a_job_scoped_codex_home():
 
 
 def test_the_credential_is_returned_whatever_happens():
+    # always() so it runs on failure and cancellation too, but only for a
+    # trusted, borrowing job -- a refused pull request must not reach the
+    # private credential store at all.
     give_back = step("Return the Codex credential")
-    assert give_back["if"] == "always()"
+    condition = give_back["if"]
+    assert "always()" in condition
+    assert "steps.gate.outputs.trusted == 'true'" in condition
+    assert "inputs.credential-store != ''" in condition
     assert give_back is steps()[-1]
 
 

@@ -101,7 +101,11 @@ jobs:
     # the API. The cost of filtering here on trigger alone is that an
     # outsider's pull request starts a job that mints a token and refuses:
     # nothing from the pull request is fetched, because every step after the
-    # gate requires steps.gate.outputs.trusted == 'true'.
+    # gate carries steps.gate.outputs.trusted == 'true' in its `if`. The
+    # cleanup step at the end carries it too, combined with `always()` so it
+    # still runs on failure and cancellation -- but never on a refused,
+    # untrusted pull request, which must not reach the private credential
+    # store at all.
     if: >
       github.event_name == 'pull_request_target' ||
       github.event_name == 'issue_comment' ||
@@ -300,7 +304,7 @@ jobs:
       # it removes the credential from a runner whose filesystem persists, and
       # it frees the lease immediately rather than in twenty minutes.
       - name: Return the Codex credential
-        if: always()
+        if: always() && steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''
         env:
           GITHUB_TOKEN: ${{ steps.org-token.outputs.token }}
         run: |
