@@ -379,13 +379,17 @@ client, which already injects its transport for testing:
 |---|---|
 | Lease is held by another job | Retry with backoff, then **skip Codex**. `backends.run()` already returns a backend that cannot run in `missing`, and the review proceeds with Claude. |
 | Store is unreachable, or the issue copy is absent | Same: Codex is skipped, the review runs with Claude. |
-| Issue copy's access token expired | `codex exec` fails. `backends.run()` collects the failure in `missing`; the review still publishes. |
+| Issue copy's access token expired | `codex exec` fails. Under `fallback`/`all` the failure lands in `missing` and the review still publishes. **Under `mode: first` it does not**: `base.run()` returns `[ready[0].review(brief)]`, the `BackendError` reaches `_fail`, and the review ends as a neutral "Bot error". A repository that puts codex first under `mode: first` is choosing that. |
 | Job is cancelled mid-review | The lease expires after 20 minutes. Nothing else is affected. The vault is untouched, because the job never held a refresh token. |
 | Keeper cannot refresh | It refuses to publish and alarms. Jobs keep using the last good issue copy until its access token expires, then degrade to Claude. |
 | Both backends unavailable | Existing behaviour: the run reports on the check run as `neutral`, never as a red pull request. |
 
-Every row degrades to "the review happens with Claude alone". None of them
-loses the credential.
+Every row except the expired-token one degrades to "the review happens with
+Claude alone", and none of them loses the credential. The exception is real and
+was found by this bot reviewing this pull request: `probe()` returns True as
+soon as `$CODEX_HOME/auth.json` EXISTS, so a stale published copy is live but
+broken, and under `mode: first` that ends the review rather than degrading it.
+This repository's own policy uses `fallback` for exactly that reason.
 
 ## 8. Security
 

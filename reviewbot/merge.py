@@ -122,7 +122,11 @@ def _combine(a: dict, b: dict) -> dict:
         merged["line_start"] = min(starts)
         merged["line_end"] = max(ends) if max(ends) != min(starts) else None
     merged["backends"] = sorted(set(a["backends"]) | set(b["backends"]))
-    merged.setdefault("evidence", other.get("evidence", ""))
+    # Not setdefault: `evidence` is now always PRESENT and may be null, so a
+    # merged finding that carries None would keep it and silently discard the
+    # other backend's evidence.
+    if not merged.get("evidence"):
+        merged["evidence"] = other.get("evidence") or ""
     return merged
 
 

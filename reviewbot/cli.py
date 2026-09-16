@@ -462,7 +462,7 @@ def _say_output(key: str, value: str) -> None:
             handle.write(f"{key}={value}\n")
 
 
-def _will_run_codex(repo: str, pr_number: int, token: str) -> bool:
+def _target_policy(repo: str, pr_number: int, token: str) -> dict | None:
     """Will this repository's policy actually REACH the codex backend?
 
     Membership in `backends` is not the question, and answering it that way was
@@ -495,14 +495,42 @@ def _will_run_codex(repo: str, pr_number: int, token: str) -> bool:
             f"reviewbot: could not read {repo}'s policy "
             f"({type(exc).__name__}: {scrub(str(exc))}); borrowing anyway"
         )
-        return True
+        return None
 
+    return policy
+
+
+def _will_run_codex(policy: dict | None) -> bool:
+    """Will the policy actually REACH the codex backend? None means unknown."""
+    if policy is None:
+        return True
     backends = policy.get("backends") or []
     if "codex" not in backends:
         return False
-    if policy.get("mode") == "first" and backends[0] != "codex":
+    # `first` runs ready[0] only; `fallback` reaches a later backend solely when
+    # the one before it FAILS, which is rare. In both cases codex listed after
+    # another backend is not worth holding the org-wide lease for -- it would
+    # starve the repositories that reach codex on every run.
+    if policy.get("mode") in ("first", "fallback") and backends[0] != "codex":
         return False
     return True
+
+
+def _lease_minutes(policy: dict | None) -> tuple[float, float]:
+    """(ttl, wait), both sized from the policy rather than guessed.
+
+    A backend review is `for attempt in (1, 2)` around a call bounded by
+    `timeout_minutes`, so ONE backend can legitimately run for twice that. A
+    TTL shorter than the work it protects is worse than no TTL: it expires
+    under a job that is still working and hands the credential to a second one.
+
+    So ttl covers the worst case with a margin, and the wait exceeds the ttl --
+    that ordering is what lets a waiter outlast a holder that died without
+    checking in, instead of giving up just before the lease frees itself.
+    """
+    cap = float((policy or {}).get("timeout_minutes") or 15)
+    ttl = 2 * cap + 5
+    return ttl, ttl + 5
 
 
 def credential_checkout(
@@ -540,10 +568,16 @@ def credential_checkout(
     try:
         # Inside the backstop on purpose: this probe talks to the network and
         # must not be the one thing in this command that can still propagate.
-        if repo and pr_number and not _will_run_codex(repo, pr_number, target_token or token):
+        policy = (
+            _target_policy(repo, pr_number, target_token or token) if repo and pr_number else None
+        )
+        if repo and pr_number and not _will_run_codex(policy):
             print(f"reviewbot: {repo} will not reach the codex backend; not taking the lease")
             _say_output("fetched", "false")
             return 0
+        ttl, sized_wait = _lease_minutes(policy)
+        if wait_minutes < 0:
+            wait_minutes = sized_wait
         # WAIT for the credential rather than giving up on it. One plan is
         # shared by every repository, so a review that arrives while another
         # holds the lease must queue, not silently drop the backend -- on a
@@ -557,7 +591,7 @@ def credential_checkout(
         waited = 0
         while True:
             try:
-                if credentials.acquire(api, holder, run_url, _dt.datetime.now(_dt.UTC)):
+                if credentials.acquire(api, holder, run_url, _dt.datetime.now(_dt.UTC), ttl):
                     held = True
                     if waited:
                         print(f"reviewbot: took the credential lease after {waited}s")
@@ -712,10 +746,10 @@ def main(argv: list[str] | None = None) -> int:
     checkout.add_argument(
         "--wait-minutes",
         type=float,
-        default=25.0,
-        help="how long to WAIT for the shared lease before giving up. The default "
-        "exceeds the 20 minute lease TTL, so a holder that died without checking "
-        "in cannot make this give up early.",
+        default=-1.0,
+        help="how long to WAIT for the shared lease before giving up. The default, -1, "
+        "sizes it from the target policy's timeout_minutes so the wait always "
+        "outlasts the lease TTL and a dead holder cannot make this give up early.",
     )
     checkout.add_argument(
         "--poll-seconds",

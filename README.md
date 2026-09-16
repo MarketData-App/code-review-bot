@@ -41,7 +41,9 @@ jobs:
 Private repositories add `with: { runs-on: '["self-hosted", "marketdata-docker"]' }`.
 
 The Codex backend needs no secret: the job borrows a short-lived credential
-from a private store. Pass `credential-store: ''` to turn that off.
+from a private store. **That store needs a keeper publishing into it**; until
+one does, `credential-checkout` reports `fetched=false` and reviews run exactly
+as they did before. Pass `credential-store: ''` to turn that off.
 
 A repository that prefers an API key sets `OPENAI_API_KEY`, and that key takes
 precedence: the job skips the borrow step entirely, so no borrowed credential
