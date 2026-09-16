@@ -6,6 +6,7 @@ that matter are asserted here instead.
 Run: pytest tests/test_workflow.py
 """
 
+import re
 from pathlib import Path
 
 import yaml
@@ -147,7 +148,8 @@ def test_every_step_after_the_gate_is_conditional_on_it():
     names = [(s.get("name") or "") for s in steps()]
     gate_at = names.index("Refuse a pull request from outside the organisation")
     for item in steps()[gate_at + 1 :]:
-        assert item.get("if") == "steps.gate.outputs.trusted == 'true'", item.get("name")
+        condition = item.get("if") or ""
+        assert "steps.gate.outputs.trusted == 'true'" in condition, item.get("name")
 
 
 def test_the_gate_step_runs_the_tested_command():
@@ -311,3 +313,175 @@ def test_both_halves_get_the_same_organisation_token():
         assert step(name)["env"]["REVIEWBOT_ORG_TOKEN"] == (
             "${{ steps.org-token.outputs.token }}"
         ), name
+
+
+# --- the borrowed Codex credential -----------------------------------------
+
+
+def test_the_credential_is_borrowed_only_after_the_gate():
+    # The store token is the org App token. Borrowing before the gate would
+    # hand a credential to a job started by an outsider's pull request.
+    names = [(s.get("name") or "") for s in steps()]
+    gate = next(i for i, n in enumerate(names) if "Refuse a pull request" in n)
+    borrow = next(i for i, n in enumerate(names) if "Borrow the Codex credential" in n)
+    assert gate < borrow
+
+
+def test_the_credential_is_written_to_a_job_scoped_codex_home():
+    # The self-hosted runner is deliberately not --ephemeral, so its filesystem
+    # persists between jobs. A credential written anywhere durable would wait
+    # there for the next job, possibly from another repository.
+    borrow = step("Borrow the Codex credential")
+    assert "$RUNNER_TEMP/codex-home" in borrow["run"]
+
+
+def test_the_credential_is_returned_whatever_happens():
+    # always() so it runs on failure and cancellation too, but only for a
+    # trusted, borrowing job -- a refused pull request must not reach the
+    # private credential store at all.
+    give_back = step("Return the Codex credential")
+    condition = give_back["if"]
+    assert "always()" in condition
+    assert "steps.gate.outputs.trusted == 'true'" in condition
+    assert "inputs.credential-store != ''" in condition
+    assert give_back is steps()[-1]
+
+
+def test_the_codex_cli_is_installed_when_either_credential_is_present():
+    install = step("Install the model CLIs")
+    assert "steps.codex.outputs.fetched" in install["env"]["HAVE_CODEX"]
+    assert "OPENAI_API_KEY" in install["env"]["HAVE_CODEX"]
+
+
+def codex_home_argument(run_text):
+    """The `--codex-home` value one step passes, unquoted."""
+    match = re.search(r'--codex-home\s+"([^"]+)"', run_text)
+    assert match, f"no --codex-home argument in: {run_text}"
+    return match.group(1)
+
+
+def test_the_review_step_reads_the_directory_the_borrow_step_wrote():
+    # This asserted `"codex-home" in ...` and so would have passed with the
+    # two steps pointing at different directories -- the borrow writing to
+    # $RUNNER_TEMP/codex-home and the review reading somewhere else, which is
+    # silent: the review would simply find no credential and drop the backend.
+    # `$RUNNER_TEMP` and `${{ runner.temp }}` are two spellings of one
+    # directory, so both are named here and the tail must match exactly.
+    borrowed = codex_home_argument(step("Borrow the Codex credential")["run"])
+    returned = codex_home_argument(step("Return the Codex credential")["run"])
+    used = step("Run the review")["env"]["CODEX_HOME"]
+    assert borrowed == "$RUNNER_TEMP/codex-home"
+    assert returned == borrowed
+    assert used == "${{ runner.temp }}/codex-home"
+    assert used.split("}}", 1)[1] == borrowed.split("$RUNNER_TEMP", 1)[1]
+
+
+# --- fix round 2: a credential problem must never fail a review -----------
+
+
+def test_the_borrow_step_cannot_fail_the_job():
+    # `reviewbot credential-checkout` exits 0 on every failure it can name,
+    # but it cannot report on a failure BEFORE its body runs. The organisation
+    # token above is continue-on-error, so an empty GITHUB_TOKEN is an
+    # expected state, and argparse answers it with SystemExit(2) before
+    # `credential_checkout` -- and its total `except Exception` -- is entered.
+    # Without a shell-level fallback the step fails and the review goes red.
+    borrow = step("Borrow the Codex credential")
+    assert borrow.get("continue-on-error") is True or "||" in borrow["run"]
+    assert '|| echo "fetched=false" >> "$GITHUB_OUTPUT"' in borrow["run"]
+
+
+def test_the_borrow_fallback_names_a_definite_output():
+    # `fetched=false`, not silence: a later `== 'true'` comparison must read a
+    # definite value rather than an empty string.
+    borrow = step("Borrow the Codex credential")
+    fallback = borrow["run"].split("||", 1)[1]
+    assert "fetched=false" in fallback
+    assert "fetched=true" not in borrow["run"]
+    # Exactly one fallback, so the output cannot be written twice in one run.
+    assert borrow["run"].count("fetched=") == 1
+
+
+def holder_argument(run_text):
+    """The `--holder` value one step passes, unquoted."""
+    match = re.search(r'--holder\s+"([^"]+)"', run_text)
+    assert match, f"no --holder argument in: {run_text}"
+    return match.group(1)
+
+
+def test_the_borrowed_lease_holder_names_the_run_not_only_the_pull_request():
+    # cancel-in-progress is true, so two runs for one repository and pull
+    # request overlap routinely: the cancelled run's `always()` check-in can
+    # land after the new run has taken the lease. While the holder was
+    # `<repo>#<pr>` the two strings were equal, `release` could not tell them
+    # apart, and the dying run freed the live run's lease.
+    holder = holder_argument(step("Borrow the Codex credential")["run"])
+    assert "github.run_id" in holder
+    assert "github.repository" in holder
+    assert "steps.pr.outputs.number" in holder
+
+
+def test_the_check_in_frees_the_lease_under_the_very_same_holder():
+    # A check-in under a different string frees nothing, and the lease then
+    # waits out its full TTL denying Codex to every other repository.
+    assert holder_argument(step("Return the Codex credential")["run"]) == holder_argument(
+        step("Borrow the Codex credential")["run"]
+    )
+
+
+def test_a_repository_with_its_own_api_key_never_borrows():
+    # Both the README and the design promise such a repository is unaffected
+    # and that its key takes precedence. While it still borrowed, it held the
+    # shared lease for the whole review -- denying Codex to everyone else --
+    # and put a second credential on disk whose precedence nothing promises.
+    assert "env.HAS_OPENAI_API_KEY != 'true'" in step("Borrow the Codex credential")["if"]
+    assert "env.HAS_OPENAI_API_KEY != 'true'" in step("Return the Codex credential")["if"]
+
+
+def test_the_api_key_test_is_computed_where_secrets_can_be_read():
+    # A step's `if:` cannot read the `secrets` context; GitHub allows it in
+    # `env:` and `with:` only. Writing `secrets.OPENAI_API_KEY == ''` straight
+    # into the `if:` would not be a stricter condition, it would be a broken
+    # workflow.
+    assert REVIEW["jobs"]["review"]["env"]["HAS_OPENAI_API_KEY"] == (
+        "${{ secrets.OPENAI_API_KEY != '' }}"
+    )
+    for name in ("Borrow the Codex credential", "Return the Codex credential"):
+        assert "secrets." not in (step(name)["if"] or ""), name
+
+
+def test_a_failed_cli_install_does_not_fail_the_review():
+    # HAVE_CODEX used to be true only for the rare API-key repository. Now the
+    # store publishes a credential and it is true on every review, so a
+    # transient npm failure under `set -eu` would red every review. `probe()`
+    # already returns False for a CLI that is not installed.
+    install = step("Install the model CLIs")
+    lines = [ln.strip() for ln in install["run"].splitlines() if ln.strip().startswith("npm ")]
+    assert len(lines) == 2
+    for line in lines:
+        assert line.endswith("|| true"), line
+
+
+def test_the_borrow_step_tells_the_bot_which_repository_it_is_for():
+    # Without --repo/--pr the bot cannot read the target's policy, and every
+    # repository would take the shared lease even when its policy never runs
+    # codex -- the default is `backends: [claude, codex]` with `mode: first`,
+    # so Claude runs and Codex does not.
+    run = step("Borrow the Codex credential")["run"]
+    assert "--repo" in run
+    assert "--pr" in run
+
+
+def test_the_job_timeout_exceeds_the_credential_wait_plus_the_review():
+    # The wait outlasts the lease TTL (2 x timeout_minutes + 5 = 35, wait 40)
+    # and one backend can take 2 x timeout_minutes = 30, so a job limit below
+    # 70 would kill a review that was only ever queueing politely.
+    assert REVIEW["jobs"]["review"]["timeout-minutes"] >= 70
+
+
+def test_the_job_budget_the_cli_assumes_matches_the_workflow():
+    # The borrow step sizes its wait against the job's budget. If these drift,
+    # a job can be killed while politely queueing and it looks like a failure.
+    from reviewbot import cli
+
+    assert REVIEW["jobs"]["review"]["timeout-minutes"] == cli.JOB_BUDGET_MINUTES

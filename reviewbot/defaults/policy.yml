@@ -2,6 +2,13 @@
 # .github/code-review/policy.yml on its base branch. Nested maps merge key by
 # key; lists replace whole.
 
+# PRIORITY ORDER, and it decides more than which model answers. `mode: first`
+# runs only the first LIVE backend, so with this default Claude reviews and
+# Codex is built, probed and never invoked. `credential-checkout` knows that
+# and declines the shared credential lease for any repository in this shape --
+# holding one plan's lease for a backend that never runs would starve the
+# repositories that do use it. A repository that wants Codex must put it first,
+# or choose `mode: all`.
 backends: [claude, codex]      # priority order; a missing credential drops one
 mode: first                    # first | fallback | all
 require_agreement: false       # all mode: single-backend findings do not block
@@ -12,7 +19,22 @@ codex_reasoning_effort: high
 gate: true                     # check = failure on blocked, else success
 require_ci_green: true         # blocked while the head commit's CI is red
 proof:
-  required: true               # runtime evidence expected for behavior changes
+  # WARNS, it does not block. The model still judges the evidence and still
+  # asks for it under "Before merge"; what it no longer does is overwrite its
+  # own verdict.
+  #
+  # This was `true`, and `paths: []` below means "every pull request", so the
+  # gate applied to all of them. Measured on the first three real reviews:
+  # sdk-py #122 scored patch 6/6 with ZERO findings and was still reported
+  # Blocked, for missing runtime evidence alone. All three would have been
+  # Blocked. A reviewer that blocks everything regardless of quality is a
+  # reviewer people learn to ignore, which is worse than not having one.
+  #
+  # Turn it on per repository -- `proof: {required: true}` -- and pair it with
+  # `paths` so it stays the FLOOR the comment below describes rather than a
+  # blanket. The SDK repositories' money-handling paths are the case it was
+  # built for.
+  required: false              # runtime evidence requested, not enforced
   # ANY-match over the whole pull request, not a per-file filter: one matching
   # file switches the gate on for every file in the change. Its use is as a
   # FLOOR under the model's judgement -- a pull request touching nothing here

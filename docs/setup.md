@@ -53,7 +53,7 @@ one fewer value to copy.
 |---|---|---|
 | `CODE_REVIEW_APP_PRIVATE_KEY` | The whole `.pem` file, header and footer included | The same two places |
 | `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` | The same two places |
-| `OPENAI_API_KEY` | Optional. Only if a repo runs the Codex backend | The same two places |
+| `OPENAI_API_KEY` | Optional. An API key for the Codex backend. Setting it turns borrowing off for that repository; a repository with no key borrows a credential instead. See "The Codex credential" below | The same two places |
 
 **Why the MarketDataApp repositories need their own copies.** An organisation
 secret can only be granted to repositories *in that organisation*, and the
@@ -83,6 +83,44 @@ Two ways to avoid the duplication, both larger decisions:
 - **Accept two secrets per SDK repository**, which is where things stand. For the organisation secrets, set the repository
 access to the repositories that call the bot.
 
+## 3a. The Codex credential
+
+The Codex backend can run from a ChatGPT plan instead of an API key. A
+personal plan authenticates with a file that holds a refresh token, and
+OpenAI's CI guidance is explicit that one such file must not be shared across
+concurrent jobs or machines: two processes redeeming one refresh token kill
+the credential.
+
+So no repository holds that file. One vault on skynet holds it, a keeper
+publishes a copy whose refresh token is a placeholder, and each job borrows
+that copy under a lease and deletes it afterwards. A borrowed copy can
+authenticate and cannot refresh, so no number of concurrent reviews can
+break the credential.
+
+`docs/superpowers/specs/2026-09-16-codex-credential-leasing-design.md` is the
+design, including what it costs and the condition that would replace it: a
+ChatGPT Business or Enterprise workspace supports Codex access tokens, which
+are finite and revocable, and would make all of this unnecessary.
+
+Three things stop a repository borrowing: `with: { credential-store: '' }` in
+the caller, an `OPENAI_API_KEY` secret (which takes precedence), and a policy
+that never reaches Codex. The last is the easy one to miss -- the shipped
+default `backends: [claude, codex]` with `mode: first` runs Claude and never
+invokes Codex, so the job declines the lease instead of holding one plan's
+credential for a backend that will not run. A repository that wants Codex puts
+it first, or sets `mode: all`.
+
+**A repository with its own `OPENAI_API_KEY` never borrows.** The borrow step
+is skipped when that secret is set, so such a repository takes no lease and no
+borrowed `auth.json` reaches its runner. That is what makes the API key "take
+precedence" a fact rather than a hope: the two credentials never meet, so the
+Codex CLI is never asked to choose between them.
+
+A credential the job cannot BORROW never fails a review. Every failure the borrow step
+can name exits 0 and reports `fetched=false`; the step also carries a shell
+fallback for the failures it cannot name, such as an empty organisation token.
+A review that cannot borrow runs with Claude alone.
+
 ## 4. Turn it on for a repository
 
 1. Copy `docs/caller-workflow.yml` from this repository to
@@ -103,7 +141,11 @@ access to the repositories that call the bot.
 - **Labels.** The bot creates none. Create these four so they carry a colour:
   `review: ready`, `review: needs changes`, `review: needs proof`,
   `review: decision needed`. A maintainer applies `review: proof waived` to
-  lift the proof gate; the bot honours it and never sets or clears it.
+  lift the proof gate where a repository has enabled it; the bot honours the
+  label and never sets or clears it. **The gate is off by default**: missing
+  runtime evidence is reported and asked for, not enforced. Turn it on per
+  repository with `proof: {required: true}`, and pair it with `proof.paths` so
+  it stays a floor under the model's judgement rather than a blanket.
 - **Auto-merge.** Only needed when `policy.auto_merge.enabled` is true. Turn
   on **Allow auto-merge** in the repository settings, and add a branch rule
   that requires the `Code review` check and the repository's CI.

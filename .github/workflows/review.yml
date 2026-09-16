@@ -53,6 +53,14 @@ on:
           value to copy.
         type: string
         default: '4955329'
+      credential-store:
+        description: >
+          The private repository holding the Codex credential this job
+          borrows. Read with the ORGANISATION App token, the same one the
+          membership check uses, so a caller outside the organisation needs
+          nothing extra. Set it to '' to turn borrowing off for a repository.
+        type: string
+        default: MarketData-App/code-review-credentials
     secrets:
       CODE_REVIEW_APP_ID:
         # Optional: the app-id input above carries the same value. Set this
@@ -93,7 +101,11 @@ jobs:
     # the API. The cost of filtering here on trigger alone is that an
     # outsider's pull request starts a job that mints a token and refuses:
     # nothing from the pull request is fetched, because every step after the
-    # gate requires steps.gate.outputs.trusted == 'true'.
+    # gate carries steps.gate.outputs.trusted == 'true' in its `if`. The
+    # cleanup step at the end carries it too, combined with `always()` so it
+    # still runs on failure and cancellation -- but never on a refused,
+    # untrusted pull request, which must not reach the private credential
+    # store at all.
     if: >
       github.event_name == 'pull_request_target' ||
       github.event_name == 'issue_comment' ||
@@ -105,9 +117,24 @@ jobs:
     # writes with the App installation token minted below.
     permissions:
       contents: read
+    # A step's `if:` cannot read the `secrets` context -- GitHub allows it in
+    # `env:` and `with:` only -- so the one secret-derived decision the steps
+    # below need is computed here, once, as a plain boolean string. It carries
+    # no secret material, only whether one is present.
+    env:
+      HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
     concurrency:
       group: code-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
       cancel-in-progress: true
+    # Must exceed the credential wait PLUS the review, and the review is not
+    # capped at `timeout_minutes`: `Backend.review` is `for attempt in (1, 2)`
+    # around a call bounded by it, so one backend can legitimately take twice
+    # that. With the shipped default of 15 the worst case is 30 for the model,
+    # and the borrow step's wait is sized to outlast the lease TTL (itself
+    # 2 x timeout_minutes + 5). 90 covers 40 + 30 with room for checkout and
+    # setup. GitHub's own default is 360, far too long for a self-hosted runner
+    # that takes one job at a time.
+    timeout-minutes: 90
     steps:
       # If this job is ever skipped unexpectedly, the `if:` above evaluated
       # false and no step ran at all. This line is what tells you whether the
@@ -228,18 +255,78 @@ jobs:
           persist-credentials: false
           submodules: false
 
+      # BORROWED, NOT STORED. The real credential never leaves skynet; what
+      # lands here is a copy whose refresh token is a placeholder, so this job
+      # cannot refresh anything and cannot cause `refresh_token_reused`
+      # however many reviews run at once. See
+      # docs/superpowers/specs/2026-09-16-codex-credential-leasing-design.md.
+      #
+      # CODEX_HOME is under RUNNER_TEMP on purpose. The self-hosted runner is
+      # not --ephemeral, so anything written to a durable path would wait
+      # there for the next job, which may belong to another repository.
+      #
+      # A repository that brings its own OPENAI_API_KEY never borrows. Its key
+      # is the credential it uses, so taking the shared lease would deny Codex
+      # to every other repository for the length of the review, and would put
+      # a second credential on disk whose precedence the docs do not promise.
+      #
+      # The holder carries the run id. Two runs for the same repository and
+      # pull request overlap routinely -- cancel-in-progress kills the first
+      # while its `always()` check-in is still to come -- and a holder without
+      # the run id makes the two indistinguishable, so the dying run frees the
+      # live run's lease. See `release` in reviewbot/credentials.py.
+      #
+      # `|| echo fetched=false`: A CREDENTIAL PROBLEM MUST NEVER FAIL A
+      # REVIEW. `reviewbot credential-checkout` exits 0 on every failure it
+      # can name, but it cannot report on what happens before it runs: an
+      # empty GITHUB_TOKEN (the org token mint above is continue-on-error, so
+      # an empty token is an expected state) makes argparse exit 2 before the
+      # command body is entered. Without the fallback that reds the whole
+      # review. The command writes `fetched=` itself on every path that exits
+      # 0, so the fallback runs only when nothing was written, and the value
+      # the later steps read is never doubled or stale.
+      - name: Borrow the Codex credential
+        id: codex
+        if: >
+          steps.gate.outputs.trusted == 'true' &&
+          inputs.credential-store != '' &&
+          env.HAS_OPENAI_API_KEY != 'true'
+        env:
+          # Two tokens, because they answer two different questions. The store
+          # lives in the MarketData-App organisation, so the ORG token reads
+          # the lease and the issued credential. The target repository's policy
+          # is read with the token scoped to THAT repository -- the org
+          # installation cannot see a private repository on the MarketDataApp
+          # user account, where several sdk-* siblings live.
+          GITHUB_TOKEN: ${{ steps.org-token.outputs.token }}
+          REVIEWBOT_TARGET_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          uv run --project bot reviewbot credential-checkout \
+            --store "${{ inputs.credential-store }}" \
+            --holder "${{ github.repository }}#${{ steps.pr.outputs.number }}#${{ github.run_id }}-${{ github.run_attempt }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --codex-home "$RUNNER_TEMP/codex-home" \
+            --repo "${{ github.repository }}" \
+            --pr "${{ steps.pr.outputs.number }}" \
+            || echo "fetched=false" >> "$GITHUB_OUTPUT"
+
       - name: Install the model CLIs
         if: steps.gate.outputs.trusted == 'true'
         env:
           HAVE_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          HAVE_CODEX: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAVE_CODEX: ${{ steps.codex.outputs.fetched == 'true' || secrets.OPENAI_API_KEY != '' }}
         run: |
           set -eu
+          # `|| true` on both: HAVE_CODEX is now true on every review that
+          # borrowed a credential, not only on the rare API-key repository, so
+          # a transient npm failure here would red every review. A missing CLI
+          # is already an ordinary outcome -- `probe()` returns False for it
+          # and the review runs with the backend that did install.
           if [ "$HAVE_CLAUDE" = "true" ] && ! command -v claude >/dev/null; then
-            npm install -g @anthropic-ai/claude-code
+            npm install -g @anthropic-ai/claude-code || true
           fi
           if [ "$HAVE_CODEX" = "true" ] && ! command -v codex >/dev/null; then
-            npm install -g @openai/codex
+            npm install -g @openai/codex || true
           fi
 
       - name: Run the review
@@ -252,6 +339,7 @@ jobs:
           REVIEWBOT_TRUSTED_AUTHORS: ${{ inputs.trusted-authors }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_HOME: ${{ runner.temp }}/codex-home
           # The same organisation token the gate gets. Without it this step
           # cannot make the membership call, falls back to author_association,
           # and refuses every organisation member on a user-account
@@ -264,3 +352,26 @@ jobs:
             --pr "${{ steps.pr.outputs.number }}" \
             --repo "$GITHUB_REPOSITORY" \
             --checkout "$GITHUB_WORKSPACE/${{ inputs.checkout-path }}"
+
+      # The lease expires on its own after 20 minutes, so a job killed by
+      # cancel-in-progress strands nothing. This step is still worth having:
+      # it removes the credential from a runner whose filesystem persists, and
+      # it frees the lease immediately rather than in twenty minutes.
+      #
+      # The holder and the condition are the borrow step's, character for
+      # character. A check-in under a different holder frees a lease this run
+      # never took; a check-in that runs when the borrow step was skipped asks
+      # the store a question it has no business asking.
+      - name: Return the Codex credential
+        if: >
+          always() &&
+          steps.gate.outputs.trusted == 'true' &&
+          inputs.credential-store != '' &&
+          env.HAS_OPENAI_API_KEY != 'true'
+        env:
+          GITHUB_TOKEN: ${{ steps.org-token.outputs.token }}
+        run: |
+          uv run --project bot reviewbot credential-checkin \
+            --store "${{ inputs.credential-store }}" \
+            --holder "${{ github.repository }}#${{ steps.pr.outputs.number }}#${{ github.run_id }}-${{ github.run_attempt }}" \
+            --codex-home "$RUNNER_TEMP/codex-home" || true

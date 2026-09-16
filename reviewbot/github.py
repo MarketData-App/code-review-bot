@@ -163,6 +163,54 @@ class GitHub:
             return None
         return base64.b64decode(data["content"]).decode("utf-8")
 
+    def file_with_sha(self, path: str, ref: str) -> tuple[str | None, str | None]:
+        """A file's text and its blob sha at `ref`, or (None, None).
+
+        The sha is what makes `put_file` a compare-and-swap, so it is returned
+        beside the text rather than fetched again.
+        """
+        import base64
+
+        quoted = urllib.parse.quote(path)
+        try:
+            reply = self._request(
+                "GET", f"/repos/{self.repo}/contents/{quoted}?ref={urllib.parse.quote(ref)}"
+            )
+        except GitHubError as exc:
+            if " 404" in str(exc):
+                return None, None
+            raise
+        data = reply.data or {}
+        if data.get("encoding") != "base64" or "content" not in data:
+            return None, None
+        return base64.b64decode(data["content"]).decode("utf-8"), data.get("sha")
+
+    def put_file(self, path: str, text: str, message: str, branch: str, sha: str | None) -> bool:
+        """Write one file. False means GitHub answered 409: someone else won.
+
+        A 409 is not a failure here. The contents API rejects a write whose
+        `sha` no longer matches the blob it was read from, and that rejection
+        is the whole lock: two jobs racing for the lease produce one 200 and
+        one 409, with no lock service anywhere.
+        """
+        import base64
+
+        quoted = urllib.parse.quote(path)
+        body = {
+            "message": message,
+            "content": base64.b64encode(text.encode("utf-8")).decode("ascii"),
+            "branch": branch,
+        }
+        if sha:
+            body["sha"] = sha
+        try:
+            self._request("PUT", f"/repos/{self.repo}/contents/{quoted}", body=body)
+        except GitHubError as exc:
+            if " 409" in str(exc):
+                return False
+            raise
+        return True
+
     def is_org_member(self, org: str, login: str) -> bool | None:
         """Is `login` a member of `org`? None when we cannot tell.
 
