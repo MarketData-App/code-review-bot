@@ -21,12 +21,20 @@ jobs:
 
       # The default test run must never touch a live model or live GitHub.
       # The e2e smoke is excluded by addopts in pyproject.toml.
-      # The review bot reads the test results out of this job's check run, so
-      # the results have to BE there. An Actions job produces an empty check
-      # run unless something writes a summary: measured on sdk-py#123, every
-      # `test (3.x)` check had summary_len=0, text_len=0, annotations=0, so the
-      # bot was reviewing with no idea whether the tests passed or what they
-      # covered. `always()` because a FAILING run is the one worth reading.
+      # MEASURED 2026-09-16, and the answer was no: a job summary does NOT
+      # reach the check run output. This job wrote one and its check run still
+      # came back `summary_len=0 text_len=0` from
+      # GET /repos/{repo}/commits/{sha}/check-runs.
+      #
+      # So the review bot cannot read test results this way. It needs either
+      # `actions: read` on the App (to fetch job logs) or an action that
+      # creates its OWN check run with populated output, the way codecov does
+      # -- codecov's check carries 2 KB of text on the same commit where every
+      # `test (3.x)` check carries none.
+      #
+      # The summary is kept because it is genuinely useful to a human reading
+      # the run. It is not wired to the reviewer, and the comment says so to
+      # stop the experiment being repeated.
       - name: Run the tests
         id: tests
         run: |

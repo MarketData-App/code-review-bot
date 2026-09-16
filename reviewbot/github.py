@@ -233,6 +233,48 @@ class GitHub:
         """The repository object. Read for `allow_auto_merge` before arming."""
         return self._request("GET", f"/repos/{self.repo}").data or {}
 
+    def check_results(self, sha: str, exclude_check_name: str) -> list[dict]:
+        """Every other check run on `sha`, with whatever output it carries.
+
+        The reviewer needs to know what CI actually said -- which tests ran,
+        what failed, what the coverage was -- and it must not spend model turns
+        finding out. The harness fetches it once, here, and the brief carries
+        it.
+
+        What GitHub gives us is uneven. Measured on sdk-py#123: codecov filled
+        `output.summary` and `output.text`, while every `test (3.x)` and `Lint`
+        check from Actions had all three fields empty. An Actions job produces
+        a bare check run unless the workflow writes a job summary, and this App
+        has no `actions` permission, so job logs are not an option. A repository
+        that wants its results read must publish them; `docs/setup.md` says how.
+
+        Losing this context degrades a review. It must never fail one, so an
+        unreadable endpoint reads as "nothing to say".
+        """
+        try:
+            runs = (
+                self._request(
+                    "GET", f"/repos/{self.repo}/commits/{sha}/check-runs?per_page=100"
+                ).data
+                or {}
+            ).get("check_runs", [])
+        except GitHubError:
+            return []
+        out = []
+        for item in runs:
+            if item.get("name") == exclude_check_name:
+                continue
+            output = item.get("output") or {}
+            out.append(
+                {
+                    "name": item.get("name") or "",
+                    "conclusion": item.get("conclusion") or item.get("status") or "",
+                    "summary": output.get("summary") or "",
+                    "text": output.get("text") or "",
+                }
+            )
+        return out
+
     def ci_state(self, sha: str, exclude_check_name: str) -> str:
         """`success`, `failure`, `pending` or `none` for everything but our own check."""
         runs = (
@@ -407,6 +449,7 @@ class GitHub:
             diff=diff,
             unseen_files=unseen,
             ci_state=self.ci_state((pull.get("head") or {}).get("sha", ""), check_name),
+            check_results=self.check_results((pull.get("head") or {}).get("sha", ""), check_name),
             previous_comment=previous,
             previous_state=state,
             comments_since=since,

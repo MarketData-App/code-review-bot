@@ -93,6 +93,42 @@ def retry_note(errors: str) -> str:
     )
 
 
+def render_check_results(results: list[dict], budget: int = 12000) -> str:
+    """CI's own words, for the brief. Empty when there is nothing to say.
+
+    Failures come FIRST and keep their text: a red check is the one the
+    reviewer most needs, and a chatty green one must not crowd it out. The
+    budget exists because a coverage report can run to tens of kilobytes and
+    the diff has to fit alongside it.
+    """
+    if not results:
+        return ""
+    order = {"failure": 0, "timed_out": 0, "action_required": 0, "cancelled": 1}
+    ranked = sorted(results, key=lambda r: order.get(r.get("conclusion", ""), 2))
+    lines: list[str] = []
+    used = 0
+    truncated = False
+    for item in ranked:
+        head = f"- **{item.get('name', '')}** — {item.get('conclusion', '') or 'no conclusion'}"
+        body = "\n".join(x for x in (item.get("summary", ""), item.get("text", "")) if x).strip()
+        block = head + (f"\n\n```\n{body}\n```" if body else "")
+        if used + len(block) > budget:
+            room = max(0, budget - used - len(head) - 20)
+            if room > 200:
+                block = head + f"\n\n```\n{body[:room]}\n… truncated\n```"
+            else:
+                block = head + "  (output truncated)"
+            truncated = True
+            lines.append(block)
+            break
+        lines.append(block)
+        used += len(block)
+    out = "\n".join(lines)
+    if truncated and "truncated" not in out:
+        out += "\n\n(output truncated)"
+    return out
+
+
 def compose(pr: PRFacts, policy: dict, review_md: str, checkout: str) -> str:
     """The whole brief, in one string."""
     out = [FRAME, "", f"The checkout is at {checkout}. Paths below are relative to it.", ""]
@@ -111,6 +147,19 @@ def compose(pr: PRFacts, policy: dict, review_md: str, checkout: str) -> str:
         "## Description",
         "",
         _fence("PULL REQUEST DESCRIPTION", pr.body),
+        "",
+        "## What CI said",
+        "",
+    ]
+    checks = render_check_results(pr.check_results)
+    out += [
+        checks
+        if checks
+        else "No check runs reported on this commit. Do not assume the tests pass.",
+        "",
+        "Read the results above rather than guessing at them, and rather than "
+        "running anything: they are the real output from this commit's CI. A "
+        "check with no output means CI reported none, not that nothing ran.",
         "",
         "## Changed files",
         "",

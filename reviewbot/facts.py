@@ -33,6 +33,8 @@ class PRFacts:
     unseen_files: list[str]
     ci_state: str
     previous_comment: dict | None
+    # What CI said, fetched by the harness so the model never has to look.
+    check_results: list[dict] = field(default_factory=list)
     previous_state: dict = field(default_factory=dict)
     comments_since: list[dict] = field(default_factory=list)
 
