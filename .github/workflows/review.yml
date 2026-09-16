@@ -117,6 +117,12 @@ jobs:
     # writes with the App installation token minted below.
     permissions:
       contents: read
+    # A step's `if:` cannot read the `secrets` context -- GitHub allows it in
+    # `env:` and `with:` only -- so the one secret-derived decision the steps
+    # below need is computed here, once, as a plain boolean string. It carries
+    # no secret material, only whether one is present.
+    env:
+      HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
     concurrency:
       group: code-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
       cancel-in-progress: true
@@ -250,6 +256,11 @@ jobs:
       # not --ephemeral, so anything written to a durable path would wait
       # there for the next job, which may belong to another repository.
       #
+      # A repository that brings its own OPENAI_API_KEY never borrows. Its key
+      # is the credential it uses, so taking the shared lease would deny Codex
+      # to every other repository for the length of the review, and would put
+      # a second credential on disk whose precedence the docs do not promise.
+      #
       # The holder carries the run id. Two runs for the same repository and
       # pull request overlap routinely -- cancel-in-progress kills the first
       # while its `always()` check-in is still to come -- and a holder without
@@ -267,7 +278,10 @@ jobs:
       # the later steps read is never doubled or stale.
       - name: Borrow the Codex credential
         id: codex
-        if: steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''
+        if: >
+          steps.gate.outputs.trusted == 'true' &&
+          inputs.credential-store != '' &&
+          env.HAS_OPENAI_API_KEY != 'true'
         env:
           GITHUB_TOKEN: ${{ steps.org-token.outputs.token }}
         run: |
@@ -321,11 +335,16 @@ jobs:
       # it removes the credential from a runner whose filesystem persists, and
       # it frees the lease immediately rather than in twenty minutes.
       #
-      # The holder is the borrow step's, character for character. A check-in
-      # under a different holder frees a lease this run never took, and the
-      # lease it should have freed then waits out its full TTL.
+      # The holder and the condition are the borrow step's, character for
+      # character. A check-in under a different holder frees a lease this run
+      # never took; a check-in that runs when the borrow step was skipped asks
+      # the store a question it has no business asking.
       - name: Return the Codex credential
-        if: always() && steps.gate.outputs.trusted == 'true' && inputs.credential-store != ''
+        if: >
+          always() &&
+          steps.gate.outputs.trusted == 'true' &&
+          inputs.credential-store != '' &&
+          env.HAS_OPENAI_API_KEY != 'true'
         env:
           GITHUB_TOKEN: ${{ steps.org-token.outputs.token }}
         run: |

@@ -53,7 +53,7 @@ one fewer value to copy.
 |---|---|---|
 | `CODE_REVIEW_APP_PRIVATE_KEY` | The whole `.pem` file, header and footer included | The same two places |
 | `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` | The same two places |
-| `OPENAI_API_KEY` | Optional. An API key for the Codex backend. A repository with no key borrows a credential instead; see "The Codex credential" below | The same two places |
+| `OPENAI_API_KEY` | Optional. An API key for the Codex backend. Setting it turns borrowing off for that repository; a repository with no key borrows a credential instead. See "The Codex credential" below | The same two places |
 
 **Why the MarketDataApp repositories need their own copies.** An organisation
 secret can only be granted to repositories *in that organisation*, and the
@@ -103,6 +103,17 @@ ChatGPT Business or Enterprise workspace supports Codex access tokens, which
 are finite and revocable, and would make all of this unnecessary.
 
 Turn it off for one repository with `with: { credential-store: '' }`.
+
+**A repository with its own `OPENAI_API_KEY` never borrows.** The borrow step
+is skipped when that secret is set, so such a repository takes no lease and no
+borrowed `auth.json` reaches its runner. That is what makes the API key "take
+precedence" a fact rather than a hope: the two credentials never meet, so the
+Codex CLI is never asked to choose between them.
+
+Nothing about the credential can fail a review. Every failure the borrow step
+can name exits 0 and reports `fetched=false`; the step also carries a shell
+fallback for the failures it cannot name, such as an empty organisation token.
+A review that cannot borrow runs with Claude alone.
 
 ## 4. Turn it on for a repository
 

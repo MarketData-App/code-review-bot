@@ -41,9 +41,13 @@ jobs:
 Private repositories add `with: { runs-on: '["self-hosted", "marketdata-docker"]' }`.
 
 The Codex backend needs no secret: the job borrows a short-lived credential
-from a private store. Pass `credential-store: ''` to turn that off. A
-repository that prefers an API key sets `OPENAI_API_KEY` and that takes
-precedence.
+from a private store. Pass `credential-store: ''` to turn that off.
+
+A repository that prefers an API key sets `OPENAI_API_KEY`, and that key takes
+precedence: the job skips the borrow step entirely, so no borrowed credential
+is ever written and the shared lease is left for the repositories that need
+it. Precedence is decided by the job, not by the Codex CLI reading two
+credentials and choosing one.
 
 ## Setting it up
 

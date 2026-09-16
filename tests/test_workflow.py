@@ -427,3 +427,24 @@ def test_the_check_in_frees_the_lease_under_the_very_same_holder():
     assert holder_argument(step("Return the Codex credential")["run"]) == holder_argument(
         step("Borrow the Codex credential")["run"]
     )
+
+
+def test_a_repository_with_its_own_api_key_never_borrows():
+    # Both the README and the design promise such a repository is unaffected
+    # and that its key takes precedence. While it still borrowed, it held the
+    # shared lease for the whole review -- denying Codex to everyone else --
+    # and put a second credential on disk whose precedence nothing promises.
+    assert "env.HAS_OPENAI_API_KEY != 'true'" in step("Borrow the Codex credential")["if"]
+    assert "env.HAS_OPENAI_API_KEY != 'true'" in step("Return the Codex credential")["if"]
+
+
+def test_the_api_key_test_is_computed_where_secrets_can_be_read():
+    # A step's `if:` cannot read the `secrets` context; GitHub allows it in
+    # `env:` and `with:` only. Writing `secrets.OPENAI_API_KEY == ''` straight
+    # into the `if:` would not be a stricter condition, it would be a broken
+    # workflow.
+    assert REVIEW["jobs"]["review"]["env"]["HAS_OPENAI_API_KEY"] == (
+        "${{ secrets.OPENAI_API_KEY != '' }}"
+    )
+    for name in ("Borrow the Codex credential", "Return the Codex credential"):
+        assert "secrets." not in (step(name)["if"] or ""), name
