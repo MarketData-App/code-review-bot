@@ -53,6 +53,7 @@ def result(
         "verdict": {"value": verdict, "reason": "r"},
         "rating": {"patch": patch, "proof": proof_tier},
         "praise": praise or [],
+        "decision": None,
     }
     if decision:
         out["decision"] = decision
