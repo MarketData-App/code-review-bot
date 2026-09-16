@@ -269,12 +269,22 @@ revocation. §8 states the exposure that remains.
 
 ```json
 {
-  "holder": "MarketDataApp/sdk-py#100",
+  "holder": "MarketDataApp/sdk-py#100#35023147390-1",
   "run_url": "https://github.com/MarketDataApp/sdk-py/actions/runs/35023147390",
-  "acquired_at": "2026-09-16T14:02:11Z",
-  "expires_at": "2026-09-16T14:22:11Z"
+  "acquired_at": "2026-09-16T14:02:11.536245+00:00",
+  "expires_at": "2026-09-16T14:22:11.536245+00:00"
 }
 ```
+
+**The holder names the run, not just the pull request.** An earlier draft used
+`repo#number` alone, and a review found the hole: `cancel-in-progress: true`
+means two runs of the SAME repository and pull request overlap routinely, so a
+cancelled run's check-in would see an identical holder string and free the new
+run's live lease -- the precise case `release()` exists to prevent. The run
+attempt is included as well as the run id, because a re-run keeps the id.
+
+Timestamps are whatever `datetime.isoformat()` writes, which is an offset
+(`+00:00`), not a `Z` suffix.
 
 **Check-out.** `GET /repos/.../contents/codex/lease.json?ref=main` returns the
 content and its blob `sha`. If the lease is free, or `expires_at` is in the
@@ -360,7 +370,8 @@ client, which already injects its transport for testing:
 - `derive(auth: dict) -> dict` — replace the refresh token, keep the rest.
 - `access_token_expiry(auth: dict) -> datetime` — decode the `exp` claim.
 - `acquire(api, holder, run_url, now, ttl) -> bool`
-- `release(api, now) -> None`
+- `release(api, holder) -> None` — frees the lease only if this exact run
+  still holds it, which is why it takes the holder rather than the clock.
 
 ## 7. Failure modes
 
@@ -422,8 +433,14 @@ no GitHub token.
 - The keeper's refusal to publish a nearly-expired token.
 - `ClaudeBackend.probe()` — true with the environment variable, true with a
   credential file and no variable, false with neither.
-- The existing opt-in `-m e2e` smoke gains one case that reviews a sandbox pull
-  request with the Codex backend fed from a store.
+- The existing opt-in `-m e2e` smoke should gain one case that reviews a sandbox
+  pull request with the Codex backend fed from a store. **Not delivered.** It
+  needs a credential published to the store, which needs the review plan logged
+  in, which is the one step still outstanding. Everything the case would cover
+  except the model call itself was instead verified by hand against the live
+  store: derive, borrow, a second job correctly refused while the lease was
+  held, check-in, and the missing-credential path releasing the lease rather
+  than stranding it.
 
 ## 10. Build order
 
