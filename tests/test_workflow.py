@@ -549,7 +549,5 @@ def test_the_caller_template_needs_no_edit_for_an_sdk_repository():
     assert "LEAVE THIS ALONE" in text
     # The TRIGGER block specifically: `runs-on` still carries a CHANGE ME, for a
     # repository that is private or outside the organisation, and that is right.
-    triggers = text[text.index("\non:"):text.index("\njobs:")]
-    assert "CHANGE ME" not in triggers, (
-        "the trigger block must need no edit for an SDK repository"
-    )
+    triggers = text[text.index("\non:") : text.index("\njobs:")]
+    assert "CHANGE ME" not in triggers, "the trigger block must need no edit for an SDK repository"
