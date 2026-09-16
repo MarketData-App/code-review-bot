@@ -170,6 +170,33 @@ If you pin `uses:` to a branch or tag, pin `bot-ref` to the **same** ref.
 default is `main`. A mismatch fails with `invalid choice` on whichever command
 the older side lacks.
 
+### 3a. The CI workflow must be named `Tests`
+
+The trigger matches a workflow by its `name:`, so the name is an interface. All
+five SDK repositories now use `Tests`, which is what lets one caller file be
+copied without edits.
+
+They did not start that way — `Tests` in sdk-go, sdk-php and sdk-py, `CI` in
+sdk-js, `Pull Request` in sdk-java — and naming the wrong one **fails silently**:
+no review ever runs and nothing says why. sdk-java is the trap, because its
+`Main` workflow looks like the obvious candidate and only runs on pushes to the
+default branch.
+
+**Find the right workflow empirically, not from filenames.** Look at which
+checks actually appear on an open pull request:
+
+```bash
+sha=$(gh api repos/<owner>/<repo>/pulls/<n> --jq .head.sha)
+gh api "repos/<owner>/<repo>/commits/$sha/check-runs" --jq '.check_runs[].name'
+```
+
+then find which workflow produces them. Rename that workflow to `Tests`.
+
+**Renaming is safe.** Every required status check in these repositories is a
+**job** name, not a workflow name — `test (3.10)`, `Verify (JDK 17)`,
+`check (20.x)` — so branch protection is untouched. The only thing that moves is
+the label in the Actions list.
+
 ### 4. Add a policy, if the defaults are not what you want
 
 `.github/code-review/policy.yml` on the **base** branch. Absent keys keep the

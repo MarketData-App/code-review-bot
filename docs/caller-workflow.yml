@@ -1,8 +1,13 @@
 # Copy this to .github/workflows/code-review.yml in the target repository.
-# Change the two things marked CHANGE ME and nothing else.
+# For an SDK repository, change nothing. For anything else, read the two
+# CHANGE ME notes.
 #
 # This is the shape that works. It is not the obvious shape, and the comments
 # say why, because every deviation below was paid for once already.
+#
+# It should need NO edit at all for an SDK repository: every one of them names
+# its pull-request CI `Tests`, and every one of them is public and on the
+# MarketDataApp account, so `runs-on` is already right.
 
 name: Code review
 
@@ -17,11 +22,19 @@ name: Code review
 # notice. Do not add it back without reading `require_ci_green` first.
 on:
   workflow_run:
-    # CHANGE ME: the `name:` of every CI workflow whose result the review should
-    # wait for -- not the filename. Name them ALL: the gate looks at every check
-    # on the commit, so whichever finishes last is the one whose review actually
-    # proceeds. The earlier triggers skip cheaply, and a repeat on the same head
-    # skips too, so extra triggers are self-deduplicating rather than wasteful.
+    # LEAVE THIS ALONE. Every SDK repository names its pull-request CI `Tests`,
+    # which is what makes this file identical everywhere -- see
+    # docs/setup.md section 4a. It is the workflow's `name:`, never its filename.
+    #
+    # Both are named because the gate looks at EVERY check on the commit, so
+    # whichever finishes last is the one whose review actually proceeds; the
+    # earlier trigger skips cheaply, and a repeat on the same head skips too, so
+    # extra triggers are self-deduplicating rather than wasteful.
+    #
+    # Naming a workflow this repository does not have is harmless -- only sdk-py
+    # has a separate `Lint`; the others lint inside `Tests` -- because a name
+    # that never occurs never matches. If you add a CI workflow whose result
+    # should gate a review, add its name here.
     workflows: ["Tests", "Lint"]
     types: [completed]
   issue_comment:

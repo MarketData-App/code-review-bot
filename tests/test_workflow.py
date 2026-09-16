@@ -534,3 +534,22 @@ def test_the_caller_template_still_names_its_secrets():
         "CODE_REVIEW_APP_PRIVATE_KEY",
         "CLAUDE_CODE_OAUTH_TOKEN",
     }
+
+
+def test_the_caller_template_needs_no_edit_for_an_sdk_repository():
+    """The workflow name is an interface, so it is standardised, not per-repo.
+
+    They diverged -- Tests in sdk-go/sdk-php/sdk-py, CI in sdk-js, Pull Request
+    in sdk-java -- and naming the wrong one fails SILENTLY: no review runs and
+    nothing says why. All five now use `Tests`, which is what lets this file be
+    copied without edits.
+    """
+    assert CALLER[ON]["workflow_run"]["workflows"] == ["Tests", "Lint"]
+    text = (ROOT / "docs/caller-workflow.yml").read_text()
+    assert "LEAVE THIS ALONE" in text
+    # The TRIGGER block specifically: `runs-on` still carries a CHANGE ME, for a
+    # repository that is private or outside the organisation, and that is right.
+    triggers = text[text.index("\non:"):text.index("\njobs:")]
+    assert "CHANGE ME" not in triggers, (
+        "the trigger block must need no edit for an SDK repository"
+    )
