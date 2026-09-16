@@ -468,3 +468,113 @@ def test_the_borrowed_credential_directory_is_not_world_readable(tmp_path, trans
         ]
     )
     assert stat.S_IMODE(home.stat().st_mode) == 0o700
+
+
+# --- do not take the lease for a repository that will not run codex ---------
+
+
+def policy_route(transport, body, base="main"):
+    transport.add(
+        "GET",
+        "/repos/MarketDataApp/sdk-py/pulls/7",
+        data={"base": {"ref": base}},
+    )
+    transport.add(
+        "GET",
+        f"/repos/MarketDataApp/sdk-py/contents/.github/code-review/policy.yml?ref={base}",
+        data={
+            "encoding": "base64",
+            "content": base64.b64encode(body.encode()).decode(),
+            "sha": "p1",
+        },
+    )
+
+
+def test_a_repository_whose_policy_omits_codex_never_takes_the_lease(tmp_path, transport, capsys):
+    # The default policy is `backends: [claude, codex]` with `mode: first`, so
+    # Claude runs and Codex never does. Borrowing anyway would hold the shared
+    # lease for the whole review and serialise every other repository's reviews
+    # behind a backend that was never going to run.
+    policy_route(transport, "backends: [claude]\n")
+    home = tmp_path / "codex-home"
+    code = cli.main(
+        [
+            "credential-checkout",
+            "--store",
+            STORE,
+            "--holder",
+            "MarketDataApp/sdk-py#7",
+            "--run-url",
+            "https://run/1",
+            "--codex-home",
+            str(home),
+            "--repo",
+            "MarketDataApp/sdk-py",
+            "--pr",
+            "7",
+        ]
+    )
+    assert code == 0
+    assert not home.exists()
+    assert "fetched=false" in capsys.readouterr().out
+    # The lease was never read or written.
+    assert not any("lease.json" in c["path"] for c in transport.calls)
+
+
+def test_a_repository_that_does_run_codex_still_borrows(tmp_path, transport, capsys):
+    policy_route(transport, "backends: [claude, codex]\n")
+    free_lease(transport)
+    issue_copy(transport)
+    home = tmp_path / "codex-home"
+    assert (
+        cli.main(
+            [
+                "credential-checkout",
+                "--store",
+                STORE,
+                "--holder",
+                "MarketDataApp/sdk-py#7",
+                "--run-url",
+                "https://run/1",
+                "--codex-home",
+                str(home),
+                "--repo",
+                "MarketDataApp/sdk-py",
+                "--pr",
+                "7",
+            ]
+        )
+        == 0
+    )
+    assert "fetched=true" in capsys.readouterr().out
+    assert home.exists()
+
+
+def test_an_unreadable_policy_borrows_rather_than_skipping(tmp_path, transport, capsys):
+    # Fail toward borrowing: an unnecessary borrow wastes a lease slot, a
+    # missed one silently drops the backend the repository asked for.
+    transport.add("GET", "/repos/MarketDataApp/sdk-py/pulls/7", status=500, text="boom")
+    free_lease(transport)
+    issue_copy(transport)
+    home = tmp_path / "codex-home"
+    assert (
+        cli.main(
+            [
+                "credential-checkout",
+                "--store",
+                STORE,
+                "--holder",
+                "MarketDataApp/sdk-py#7",
+                "--run-url",
+                "https://run/1",
+                "--codex-home",
+                str(home),
+                "--repo",
+                "MarketDataApp/sdk-py",
+                "--pr",
+                "7",
+            ]
+        )
+        == 0
+    )
+    assert "fetched=true" in capsys.readouterr().out
