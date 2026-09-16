@@ -84,15 +84,31 @@ def _read_lease(api) -> tuple[dict, str | None]:
 
 
 def _held(lease: dict, now: datetime.datetime) -> bool:
+    """Is this lease still someone else's? An unreadable expiry means no.
+
+    Every branch that cannot read a definite expiry answers "free", for the
+    same reason `_read_lease` treats unparseable JSON as free: the design
+    promises that a credential problem needs no human action and no recovery
+    runbook, and a lease that reads as held forever wedges every review until
+    somebody hand-edits a file in the store. The lease is a courtesy, not the
+    safety property -- the borrowed credential cannot refresh, so two jobs
+    holding it at once is survivable, while a permanently wedged lease is not.
+
+    A naive `expires_at` is read as UTC rather than raising. The bot only ever
+    writes an aware, UTC isoformat; a naive one came from a hand edit, and
+    comparing it as UTC is both answerable and honest about its intent.
+    """
     if not lease.get("holder"):
         return False
     expires = lease.get("expires_at")
     if not isinstance(expires, str):
-        return True
+        return False
     try:
         when = datetime.datetime.fromisoformat(expires)
     except ValueError:
-        return True
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.UTC)
     return when > now
 
 

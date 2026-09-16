@@ -196,6 +196,59 @@ def test_release_leaves_a_lease_another_job_now_holds(store):
     assert [c["method"] for c in transport.calls] == ["GET"]
 
 
+# --- fix round 2: an unreadable lease must not wedge every review ----------
+
+
+def test_a_lease_with_no_expiry_is_taken_over(store):
+    # `expires_at` absent used to read as "held forever", so one bad write
+    # into the store stopped Codex on every repository until a human edited
+    # the file by hand. The design promises no human action and no recovery
+    # runbook, so an expiry that cannot be read means free.
+    api, transport = store
+    transport.add(
+        "GET",
+        f"/repos/{STORE}/contents/codex/lease.json?ref=main",
+        data={
+            "encoding": "base64",
+            "content": base64.b64encode(json.dumps({"holder": "sdk-go#41"}).encode()).decode(),
+            "sha": "blob111",
+        },
+    )
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    assert credentials.acquire(api, "sdk-py#100#7", "https://run/1", NOW) is True
+
+
+def test_a_lease_with_an_unparseable_expiry_is_taken_over(store):
+    api, transport = store
+    lease_body(transport, "sdk-go#41", "next tuesday")
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    assert credentials.acquire(api, "sdk-py#100#7", "https://run/1", NOW) is True
+
+
+def test_a_lease_with_an_expiry_of_the_wrong_type_is_taken_over(store):
+    api, transport = store
+    lease_body(transport, "sdk-go#41", 1_800_000_000)
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    assert credentials.acquire(api, "sdk-py#100#7", "https://run/1", NOW) is True
+
+
+def test_a_naive_expiry_is_compared_rather_than_raising(store):
+    # Comparing a naive datetime with an aware one raises TypeError, which
+    # escaped `acquire` and failed the borrow step. A naive stamp is read as
+    # UTC: the bot only ever writes aware UTC, so a naive one is a hand edit.
+    api, transport = store
+    lease_body(transport, "sdk-go#41", "2026-09-16T14:10:00")
+    assert credentials.acquire(api, "sdk-py#100#7", "https://run/1", NOW) is False
+    assert [c["method"] for c in transport.calls] == ["GET"]
+
+
+def test_a_naive_expiry_in_the_past_frees_the_lease(store):
+    api, transport = store
+    lease_body(transport, "sdk-go#41", "2026-09-16T13:59:00")
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    assert credentials.acquire(api, "sdk-py#100#7", "https://run/1", NOW) is True
+
+
 # --- fix round 2: the holder names one run, not one pull request ----------
 
 
