@@ -21,8 +21,28 @@ jobs:
 
       # The default test run must never touch a live model or live GitHub.
       # The e2e smoke is excluded by addopts in pyproject.toml.
+      # The review bot reads the test results out of this job's check run, so
+      # the results have to BE there. An Actions job produces an empty check
+      # run unless something writes a summary: measured on sdk-py#123, every
+      # `test (3.x)` check had summary_len=0, text_len=0, annotations=0, so the
+      # bot was reviewing with no idea whether the tests passed or what they
+      # covered. `always()` because a FAILING run is the one worth reading.
       - name: Run the tests
-        run: uv run pytest -v
+        id: tests
+        run: |
+          set -o pipefail
+          uv run pytest -v --tb=short 2>&1 | tee /tmp/pytest.out
+
+      - name: Publish the test results for the reviewer
+        if: always()
+        run: |
+          {
+            echo "### Test results"
+            echo
+            echo '```'
+            tail -c 30000 /tmp/pytest.out 2>/dev/null || echo "no test output captured"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check linting (ruff)
         run: uv run ruff check .

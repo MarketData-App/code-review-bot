@@ -647,3 +647,44 @@ def test_force_overrides_the_skip():
 
 def should_skip_reason(pr):
     return policy.should_skip(pr, config.defaults())
+
+
+# --- do not spend a review on a pull request that is not green --------------
+
+
+def test_a_red_pull_request_is_not_reviewed_at_all():
+    """The model must not run. It used to run, then have its verdict flipped.
+
+    `require_ci_green` was only consulted in `decide()`, which happens AFTER
+    `backends.run()`. So a failing pull request bought a full review, tokens
+    and all, and then had the result overwritten with "CI is red".
+    """
+    pr = make_pr(ci_state="failure")
+    assert policy.should_skip(pr, config.defaults()) == "CI is red on the head commit"
+
+
+def test_a_pending_pull_request_is_not_reviewed_yet():
+    pr = make_pr(ci_state="pending")
+    assert policy.should_skip(pr, config.defaults()) == "CI has not finished on the head commit"
+
+
+def test_a_green_pull_request_is_reviewed():
+    assert policy.should_skip(make_pr(ci_state="success"), config.defaults()) is None
+
+
+def test_a_repository_with_no_ci_at_all_is_still_reviewed():
+    # "none" is no opinion, not a failure. A repository without CI must not
+    # become a repository without review.
+    assert policy.should_skip(make_pr(ci_state="none"), config.defaults()) is None
+
+
+def test_turning_the_ci_requirement_off_reviews_anyway():
+    pol = config.load("require_ci_green: false\n")
+    assert policy.should_skip(make_pr(ci_state="failure"), pol) is None
+
+
+def test_force_reviews_a_red_pull_request():
+    # Asking deliberately must still work -- debugging a review on a branch
+    # whose CI is red is a real thing to want.
+    pr = make_pr(ci_state="failure")
+    assert policy.should_skip(pr, config.defaults(), force=True) is None

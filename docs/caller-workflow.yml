@@ -1,5 +1,25 @@
 name: Code review
 
+# READ THIS BEFORE ARMING pull_request_target.
+#
+# The bot does not review a pull request whose CI is red OR still running --
+# `require_ci_green` is checked before the model, so an unfinished pull request
+# costs nothing instead of buying a review it then overwrites.
+#
+# `opened` and `synchronize` fire at the moment CI STARTS. So with the triggers
+# below, most automatic reviews will skip with "CI has not finished on the head
+# commit" and never come back, because nothing re-triggers when CI goes green.
+#
+# Three ways to live with that, in order of preference:
+#
+#   1. Trigger on CI finishing instead. Add a `workflow_run` trigger naming
+#      your test workflow and `types: [completed]`. The bot does not yet read a
+#      pull request number out of a `workflow_run` payload, so this needs a
+#      small change in the bot first -- ask before relying on it.
+#   2. Keep `workflow_dispatch` only, and review deliberately. This is what
+#      sdk-py does today.
+#   3. Set `require_ci_green: false` in the target repository's policy and
+#      accept reviews of pull requests that do not build.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, edited]
