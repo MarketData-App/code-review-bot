@@ -112,20 +112,6 @@ def test_the_token_reaches_the_bot_through_the_environment():
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
 
 
-def test_the_caller_example_uses_pull_request_target():
-    assert "pull_request_target" in CALLER[ON]
-
-
-def test_the_caller_example_triggers_on_the_five_actions():
-    assert set(CALLER[ON]["pull_request_target"]["types"]) == {
-        "opened",
-        "synchronize",
-        "reopened",
-        "ready_for_review",
-        "edited",
-    }
-
-
 def test_the_dogfood_workflow_calls_the_reusable_one_locally():
     assert SELF["jobs"]["review"]["uses"] == "./.github/workflows/review.yml"
 
@@ -494,15 +480,6 @@ def test_the_force_input_reaches_the_review_step():
     assert "inputs.force" in step("Run the review")["env"]["REVIEWBOT_FORCE"]
 
 
-def test_the_caller_template_warns_about_the_ci_gate_and_automatic_triggers():
-    # The bot now skips a pull request whose CI is pending, and
-    # pull_request_target fires exactly when CI starts. Anyone copying this
-    # template must meet that fact before they hit it in production.
-    text = (ROOT / "docs/caller-workflow.yml").read_text()
-    assert "CI has not finished" in text
-    assert "workflow_run" in text
-
-
 def test_a_successful_ci_run_can_trigger_a_review():
     # The gate skips a commit whose checks are still running, and
     # pull_request_target fires when CI STARTS. Without a workflow_run trigger
@@ -515,3 +492,45 @@ def test_a_successful_ci_run_can_trigger_a_review():
 def test_the_pr_number_step_reads_a_workflow_run_payload():
     run = step("Work out which pull request this is")
     assert "workflow_run.pull_requests[0].number" in run["env"]["FROM_RUN"]
+
+
+# --- the caller template is the shape that works ---------------------------
+
+
+def test_the_caller_template_does_not_use_pull_request_target():
+    """It fires when CI STARTS, and the bot refuses a commit still building.
+
+    Measured on sdk-py: tests take ~75s, a review reaches the gate in 30-40. A
+    push-triggered review finds CI pending, skips, and nothing brings it back --
+    reporting success while doing nothing. The template must not teach that.
+    """
+    assert "pull_request_target" not in CALLER[ON]
+    text = (ROOT / "docs/caller-workflow.yml").read_text()
+    assert "deliberately ABSENT" in text
+
+
+def test_the_caller_template_triggers_on_ci_completing():
+    run = CALLER[ON]["workflow_run"]
+    assert run["types"] == ["completed"]
+    assert run["workflows"], "it must name the CI workflows to wait for"
+
+
+def test_the_caller_template_only_reviews_pull_requests():
+    # workflow_run fires for default-branch pushes too, where there is no pull
+    # request to review.
+    cond = CALLER["jobs"]["review"]["if"]
+    assert "workflow_run.event == 'pull_request'" in cond
+
+
+def test_the_caller_template_guards_the_null_force_input():
+    # `inputs` exists only for workflow_dispatch; a null against a boolean input
+    # fails the whole workflow at evaluation, with no job and no log.
+    assert "inputs.force || false" in str(CALLER["jobs"]["review"]["with"]["force"])
+
+
+def test_the_caller_template_still_names_its_secrets():
+    # `secrets: inherit` delivers nothing across the owner boundary.
+    assert set(CALLER["jobs"]["review"]["secrets"]) == {
+        "CODE_REVIEW_APP_PRIVATE_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    }

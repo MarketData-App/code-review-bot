@@ -123,18 +123,109 @@ A review that cannot borrow runs with Claude alone.
 
 ## 4. Turn it on for a repository
 
-1. Copy `docs/caller-workflow.yml` from this repository to
-   `.github/workflows/code-review.yml` in the target repository.
-2. A private repository adds the self-hosted runner:
+Six steps. Steps 3 and 4 are where every mistake has been made so far, so they
+carry the measurement that found each one.
 
-   ```yaml
-       with:
-         runs-on: '["self-hosted", "marketdata-docker"]'
-   ```
+### 1. Install the App on the repository
 
-3. Optional: add `.github/code-review/policy.yml` and
-   `.github/code-review/REVIEW.md` on the default branch. Without them the
-   repository gets the default review.
+`docs/setup.md` §2. Both installations already say `repository_selection: all`,
+so a repository in `MarketData-App`, or on the `MarketDataApp` user account, is
+covered the moment it exists. Nothing to do unless the repository is somewhere
+else.
+
+### 2. Add the two secrets
+
+`CODE_REVIEW_APP_PRIVATE_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`, on the repository.
+An organisation secret does NOT reach a repository on the MarketDataApp user
+account, which is where the `sdk-*` repositories live — that is the same owner
+boundary that forces the caller to name its secrets explicitly rather than use
+`secrets: inherit`.
+
+### 3. Copy the caller workflow
+
+Copy `docs/caller-workflow.yml` to `.github/workflows/code-review.yml` and
+change the two things it marks. **Copy it; do not write your own from memory.**
+Its comments carry four things that each cost a failed run:
+
+- **Trigger on CI finishing, never on the push.** `pull_request_target` fires on
+  `opened`/`synchronize`, which is when CI *starts*, and the bot refuses a commit
+  whose checks are still running. Measured on sdk-py: tests take ~75 s, a review
+  reaches that gate in 30–40 s. A push-triggered review skips and never returns,
+  and the run reports success while doing nothing.
+- **Name every CI workflow** in `workflow_run.workflows`, by its `name:` and not
+  its filename. The gate looks at every check on the commit, so whichever
+  finishes last is the one whose review proceeds. Earlier triggers skip cheaply;
+  a repeat on the same head skips too. Extra triggers are self-deduplicating.
+- **Only review pull requests.** `workflow_run` fires for default-branch pushes
+  as well, because CI runs there too. Without
+  `github.event.workflow_run.event == 'pull_request'`, every merge starts a job
+  that mints App tokens, finds no pull request and does nothing.
+- **`force: ${{ inputs.force || false }}`.** `inputs` exists only for
+  `workflow_dispatch`. On any other event it is null, and a null against a
+  boolean-typed input fails the *whole workflow at evaluation* — no job, no log,
+  just "this run likely failed because of a workflow file issue".
+
+If you pin `uses:` to a branch or tag, pin `bot-ref` to the **same** ref.
+`uses:` picks the workflow; `bot-ref` picks the bot code it checks out, and its
+default is `main`. A mismatch fails with `invalid choice` on whichever command
+the older side lacks.
+
+### 4. Add a policy, if the defaults are not what you want
+
+`.github/code-review/policy.yml` on the **base** branch. Absent keys keep the
+defaults in `reviewbot/defaults/policy.yml`. Three choices actually matter:
+
+**Which model reviews.** `backends` is a LIST, so naming it replaces the default
+wholesale rather than adding to it.
+
+| you want | write |
+|---|---|
+| Claude only | `backends: [claude]` |
+| Codex, falling back to Claude | `backends: [codex, claude]` + `mode: fallback` |
+| both, merged | `backends: [claude, codex]` + `mode: all` |
+
+Use `fallback`, not `first`, when you list two. Under `first` the run is
+`[ready[0].review(brief)]` and a `BackendError` goes straight to `_fail`: the
+second backend is never tried, because it was dropped into `missing` the moment
+the first probed live. Since `CodexBackend.probe()` returns true as soon as
+`$CODEX_HOME/auth.json` *exists*, a stale borrowed credential is live-but-broken
+— exactly the state that would end the review with a neutral "Bot error" and no
+comment.
+
+**Codex must be FIRST to get the credential.** `credential-checkout` declines the
+shared lease when codex is not first under `first` or `fallback`, because a later
+backend is reached rarely or never and holding one plan's lease for it starves
+the repositories that use it on every run. So `[claude, codex]` with
+`mode: fallback` gets no Codex credential, by design.
+
+**The proof gate is off by default and should usually stay off.** It warns: the
+model still judges the evidence and asks for it under "Before merge". Turning it
+on makes missing evidence *overwrite the verdict*. Measured on the first three
+real reviews: sdk-py #122 scored patch 6/6 with zero findings and was still
+reported Blocked, and all three would have been. If you do turn it on, pair it
+with `proof.paths` — and know that it is an ANY-match over the whole pull
+request, so one matching file gates every file. On sdk-py,
+`paths: ["src/marketdata/**"]` fires on 7 of 7 open pull requests.
+
+### 5. Leave the check advisory until you trust it
+
+The `Code review` check is not a required status check anywhere today, so a
+⛔ blocks no merges. Add it to a branch rule only once you have read a few of its
+reviews and agree with them.
+
+### 6. Prove it, do not assume it
+
+```bash
+gh workflow run code-review.yml -R <owner>/<repo> -f pr=<number>
+```
+
+Then read the run's log, not just its colour. A green run that skipped is the
+outcome that hides: look for `reviewbot: blocked on …` or `reviewbot: ready …`
+rather than a skip line. `reviewbot: skipped, …` names its reason — CI not
+finished, already reviewed, every file in `ignore_paths`.
+
+To re-review a commit deliberately, pass `-f force=true`, or comment
+`@marketdata-code-review re-review` on the pull request.
 
 ## 5. Optional repository settings
 
