@@ -20,23 +20,38 @@ Add this workflow to the target repository:
 name: Code review
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+  workflow_run:
+    workflows: ["Tests", "Lint"]   # the `name:` of your CI workflows
+    types: [completed]
   issue_comment:
     types: [created]
   workflow_dispatch:
     inputs:
-      pr:
-        description: Pull request number
-        required: true
+      pr: { description: Pull request number, required: true }
+      force: { description: Re-review an unchanged commit, type: boolean, default: false }
 
 jobs:
   review:
+    if: >
+      (github.event_name != 'workflow_run' ||
+       github.event.workflow_run.event == 'pull_request') &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request != null &&
+        startsWith(github.event.comment.body, '@marketdata-code-review')))
     uses: MarketData-App/code-review-bot/.github/workflows/review.yml@main
     secrets:
       CODE_REVIEW_APP_PRIVATE_KEY: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    with:
+      force: ${{ inputs.force || false }}
 ```
+
+**Copy `docs/caller-workflow.yml` rather than this snippet** — it carries the
+reasoning for each line, and `docs/setup.md` §4 is the step-by-step. The short
+version of why it looks like this: a review must not start until CI is green, so
+it triggers on CI *finishing* rather than on the push that starts it; and
+`workflow_run` fires for default-branch pushes too, so the job filters to pull
+requests.
 
 Private repositories add `with: { runs-on: '["self-hosted", "marketdata-docker"]' }`.
 
