@@ -81,7 +81,6 @@ def make_result(**over):
         "proof": {"status": "missing", "ask": "Show the retry firing against a 503."},
         "verdict": {"value": "needs_changes", "reason": "One blocking finding."},
         "rating": {"patch": 3, "proof": 2},
-        "praise": ["The test reads well."],
     }
     result.update(over)
     return result
@@ -219,8 +218,8 @@ def test_the_first_review_has_no_since_section(parts):
     assert "### Since last review" not in render.render(result, meta, pol, decisions, since, waived)
 
 
-def test_praise_renders(parts):
-    assert "The test reads well." in render.render(*parts)
+def test_no_praise_section_is_rendered(parts):
+    assert "### Praise" not in render.render(*parts)
 
 
 def test_a_waived_finding_is_marked_and_not_in_before_merge(parts):

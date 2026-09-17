@@ -157,9 +157,6 @@ def render(
         )
         out.append("")
 
-    if result.get("praise"):
-        out += ["### Praise", ""] + [f"- {_scrub(p)}" for p in result["praise"]] + [""]
-
     ran = ", ".join(f"{name} ({meta['models'].get(name, '?')})" for name in meta["backends"])
     missing = "".join(f" · {name} unavailable" for name in meta.get("missing_backends", []))
     out += [

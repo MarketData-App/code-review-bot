@@ -43,7 +43,6 @@ def result(
     patch=4,
     proof_tier=5,
     summary="A summary.",
-    praise=None,
     decision=None,
 ):
     out = {
@@ -52,7 +51,6 @@ def result(
         "proof": {"status": proof, "ask": "ask"},
         "verdict": {"value": verdict, "reason": "r"},
         "rating": {"patch": patch, "proof": proof_tier},
-        "praise": praise or [],
         "decision": None,
     }
     if decision:
@@ -246,10 +244,10 @@ def test_the_summary_comes_from_the_first_backend_in_policy_order(policy):
     assert merge.merge([b, a], policy)["summary"] == "Claude says this."
 
 
-def test_praise_is_combined_without_duplicates(policy):
-    a = backend_result("claude", result([], praise=["Good test.", "Nice name."]))
-    b = backend_result("codex", result([], praise=["Good test."]))
-    assert merge.merge([a, b], policy)["praise"] == ["Good test.", "Nice name."]
+def test_a_merged_result_carries_no_praise(policy):
+    a = backend_result("claude", result([]))
+    b = backend_result("codex", result([]))
+    assert "praise" not in merge.merge([a, b], policy)
 
 
 def test_the_first_decision_packet_wins(policy):

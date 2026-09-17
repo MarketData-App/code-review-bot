@@ -265,12 +265,6 @@ def merge(results: list[BackendResult], policy: dict, unlocated_merger=None) -> 
         "proof": min(r.result["rating"]["proof"] for r in results),
     }
 
-    praise: list[str] = []
-    for item in [p for r in results for p in r.result.get("praise", [])]:
-        if item not in praise:
-            praise.append(item)
-    out["praise"] = praise
-
     # Always present, null when no backend raised one. The schema requires the
     # key since it went strict, and consumers read it with truthiness, so null
     # and absent mean the same thing to them but not to the validator.
