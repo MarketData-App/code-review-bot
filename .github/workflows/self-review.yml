@@ -1,8 +1,24 @@
 name: Self review
 
+# WHEN A REVIEW HAPPENS: when CI goes green, or when a person asks. This is
+# the same shape as docs/caller-workflow.yml, and for the same reason.
+#
+# `pull_request_target` is deliberately ABSENT. It fires on `opened` and
+# `synchronize` -- the moment CI STARTS -- and `require_ci_green` then refuses
+# a commit whose checks are still running. With no other trigger, nothing ever
+# brings the review back: the job reports success having done nothing, which is
+# the failure hardest to notice. This file had that bug. Measured on PR #15,
+# run 35232326112:
+#
+#     reviewbot: skipped, CI has not finished on the head commit
+#
+# Three pull requests carried a green `review` check and no review.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+  workflow_run:
+    # This repository's own pull-request CI. It is the workflow's `name:`,
+    # never its filename, and tests/test_workflow.py asserts the two agree.
+    workflows: ["CI"]
+    types: [completed]
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -10,16 +26,35 @@ on:
       pr:
         description: Pull request number
         required: true
+      force:
+        description: >
+          Review a commit that has already been reviewed. The bot skips an
+          unchanged head, so without this a re-dispatch is a no-op that
+          reports success.
+        type: boolean
+        default: false
 
 jobs:
   review:
+    # 1. workflow_run fires for the push to main as well, because CI runs
+    #    there too. Without this, every merge would start a review that mints
+    #    App tokens, finds no pull request and does nothing.
+    #    `workflow_run.event` is what triggered the UPSTREAM run.
+    # 2. A comment starts a review only when it is addressed to the bot.
     if: >
-      github.event_name != 'issue_comment' ||
-      (github.event.issue.pull_request != null &&
-       startsWith(github.event.comment.body, '@marketdata-code-review'))
+      (github.event_name != 'workflow_run' ||
+       github.event.workflow_run.event == 'pull_request') &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request != null &&
+        startsWith(github.event.comment.body, '@marketdata-code-review')))
     uses: ./.github/workflows/review.yml
     secrets: inherit
     with:
+      # `|| false` is load-bearing. `inputs` exists only for
+      # workflow_dispatch, so on a workflow_run or an issue_comment this is
+      # null -- and a null against a boolean-typed input fails the ENTIRE
+      # workflow at evaluation, with no job and no log.
+      force: ${{ inputs.force || false }}
       # Run the bot from the default branch, never from the pull request's
       # own head: a pull request must not be reviewed by the code it is
       # proposing (spec section 6). It also means there is no dependency on a
