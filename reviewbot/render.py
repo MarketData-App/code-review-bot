@@ -159,9 +159,15 @@ def render(
 
     ran = ", ".join(f"{name} ({meta['models'].get(name, '?')})" for name in meta["backends"])
     missing = "".join(f" · {name} unavailable" for name in meta.get("missing_backends", []))
+    # The rule sets, always, including when there are none. A repository whose
+    # REVIEW.md lost its `@include` lines replaces the shipped rules in full
+    # and is otherwise indistinguishable from one that meant to.
+    sets = meta.get("rule_sets")
+    rules = " · rules: " + (", ".join(sets) if sets else "this repository only")
     out += [
         "---",
-        f"Reviewed `{meta['reviewed_sha'][:7]}` · revision {meta['revision']} · {ran}{missing}",
+        f"Reviewed `{meta['reviewed_sha'][:7]}` · revision {meta['revision']} · "
+        f"{ran}{missing}{rules}",
     ]
 
     state = {

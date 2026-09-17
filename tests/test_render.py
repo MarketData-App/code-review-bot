@@ -19,6 +19,7 @@ META = {
     "models": {"claude": "claude-opus-5"},
     "missing_backends": [],
     "unseen_files": [],
+    "rule_sets": ["default", "sdk"],
 }
 
 
@@ -243,6 +244,33 @@ def test_a_missing_backend_is_named_in_the_footer(parts):
     result, meta, pol, decisions, since, waived = parts
     meta = dict(meta, missing_backends=["codex"])
     assert "codex unavailable" in render.render(result, meta, pol, decisions, since, waived)
+
+
+def test_the_footer_names_the_rule_sets_the_review_was_built_from(parts):
+    body = render.render(*parts)
+    footer = body.strip().splitlines()[-3]
+    assert "rules: default, sdk" in footer
+
+
+def test_a_repository_that_replaced_the_shipped_rules_says_so_in_the_footer(parts):
+    """The silent case the include block exists to expose.
+
+    A REVIEW.md with no `@include` replaces the shipped rules in full. That is
+    allowed, and it is the same shape as a repository that lost its include
+    lines by accident, so the footer has to tell them apart for a reader.
+    """
+    result, meta, pol, decisions, since, waived = parts
+    meta = dict(meta, rule_sets=[])
+    footer = render.render(result, meta, pol, decisions, since, waived).strip().splitlines()[-3]
+    assert "rules: this repository only" in footer
+
+
+def test_the_footer_survives_meta_that_never_heard_of_rule_sets(parts):
+    """`markers.parse` reads old comments; render must not crash on old meta."""
+    result, meta, pol, decisions, since, waived = parts
+    meta = {k: v for k, v in meta.items() if k != "rule_sets"}
+    body = render.render(result, meta, pol, decisions, since, waived)
+    assert "rules: this repository only" in body
 
 
 def test_unseen_files_are_named(parts):

@@ -283,11 +283,19 @@ def run(
         # own review rules.
         policy = config.load(api.file_at_ref(POLICY_PATH, base_ref or "HEAD"))
         check_name = policy["check_name"]
-        review_md = brief_mod.load_review(api.file_at_ref(REVIEW_PATH, base_ref or "HEAD"))
+        review = brief_mod.resolve_review(api.file_at_ref(REVIEW_PATH, base_ref or "HEAD"))
+        review_md = review.text
     except config.PolicyError as exc:
         pr = _safe_gather(api, number, config.defaults())
         return _fail(
             api, pr.head_sha if pr else "", check_name, f"{POLICY_PATH} is malformed: {exc}"
+        )
+    except brief_mod.ReviewError as exc:
+        # A typo in an include silently dropped the rules it named. Fail with
+        # the name, the way a malformed policy key does.
+        pr = _safe_gather(api, number, config.defaults())
+        return _fail(
+            api, pr.head_sha if pr else "", check_name, f"{REVIEW_PATH} is malformed: {exc}"
         )
     except GitHubError as exc:
         return _fail(api, "", check_name, f"could not read {CONFIG_DIR}: {exc}")
@@ -364,6 +372,7 @@ def run(
         "models": {r.backend: r.model for r in results},
         "missing_backends": missing,
         "unseen_files": pr.unseen_files,
+        "rule_sets": review.includes,
     }
 
     extra_notes = _apply_auto_merge(api, pr, policy, decisions)

@@ -3,8 +3,21 @@
 Everything after the frame is attacker-controlled text. It is fenced with
 sentinels, any forged sentinel is neutralised, and the frame says plainly that
 the fenced regions are data.
+
+A repository's REVIEW.md opens with an include block naming the rule sets the
+bot ships, one per line, before anything else:
+
+    @include default
+    @include sdk
+
+    ## House rules for this repository
+
+An include names a KEY, never a path, and the file behind it ships in this
+package. So the directive cannot be pointed at a file in the checkout, and a
+pull request cannot make the loader read something of its choosing.
 """
 
+import dataclasses
 import re
 from pathlib import Path
 
@@ -12,9 +25,42 @@ from reviewbot.facts import PRFacts
 from reviewbot.redact import scrub
 from reviewbot.result import PATCH_TIERS, PROOF_TIERS
 
-DEFAULT_REVIEW_PATH = Path(__file__).parent / "defaults" / "REVIEW.md"
+RULES_DIR = Path(__file__).parent / "rules"
 
-INCLUDE_DIRECTIVE = "@include default"
+# `@include <name>`, and nothing else on the line. The name is deliberately
+# narrow: letters, digits and a dash. A dot and a slash are absent, so a
+# traversal cannot even be spelled, and `rule_set` refuses it a second time.
+_INCLUDE_RE = re.compile(r"^@include(?:\s+([A-Za-z0-9-]+))?\s*$", re.IGNORECASE)
+
+
+class ReviewError(ValueError):
+    """A REVIEW.md asked for a rule set this bot does not ship."""
+
+
+@dataclasses.dataclass(frozen=True)
+class ResolvedReview:
+    """The rules the model will read, and the rule sets they came from."""
+
+    text: str
+    includes: list[str]
+
+
+def available_rule_sets() -> list[str]:
+    """Every rule set name this bot ships, sorted."""
+    return sorted(p.stem for p in RULES_DIR.glob("*.md"))
+
+
+def rule_set(name: str) -> str:
+    """The shipped rule set called `name`.
+
+    The lookup is a membership test against the shipped names, not a path
+    join. A join would resolve `../defaults/policy` to a real file.
+    """
+    if name not in available_rule_sets():
+        known = ", ".join(available_rule_sets())
+        raise ReviewError(f"unknown rule set: {name!r}. This bot ships: {known}")
+    return (RULES_DIR / f"{name}.md").read_text()
+
 
 _TIERS = "\n".join([f"{i + 1}. {word}" for i, word in enumerate(PATCH_TIERS)])
 _PROOF_TIERS = "\n".join([f"{i + 1}. {word}" for i, word in enumerate(PROOF_TIERS)])
@@ -58,18 +104,63 @@ Now review the pull request. Return the JSON object and nothing else.
 
 def default_review() -> str:
     """The shipped standing instructions."""
-    return DEFAULT_REVIEW_PATH.read_text()
+    return rule_set("default")
+
+
+def _split_include_block(repo_text: str) -> tuple[list[str], str]:
+    """Return the names in the leading include block, and the text after it.
+
+    Only the leading block counts. Once an ordinary line has been seen the
+    scan stops, so a rules file may quote the directive to document it without
+    the loader acting on the quotation.
+    """
+    names: list[str] = []
+    lines = repo_text.splitlines()
+    cut = len(lines)
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = _INCLUDE_RE.match(stripped)
+        if not match:
+            cut = index
+            break
+        name = match.group(1)
+        if not name:
+            raise ReviewError("an `@include` line names no rule set")
+        name = name.lower()
+        if name in names:
+            raise ReviewError(f"rule set included twice: {name!r}")
+        names.append(name)
+    return names, "\n".join(lines[cut:]).strip()
+
+
+def resolve_review(repo_text: str | None) -> ResolvedReview:
+    """The rules the model reads, and the rule sets that built them.
+
+    Three shapes, and the middle one is why this exists:
+
+    - no repository file at all: the default rule set alone;
+    - a file opening with an include block: those rule sets, in the order
+      written, then the repository's own text;
+    - a file with no include block: the repository's text alone, replacing
+      everything. `render.py` reports the rule sets on every review, so a
+      repository that dropped its includes shows it rather than going quiet.
+    """
+    if repo_text is None or not repo_text.strip():
+        return ResolvedReview(default_review(), ["default"])
+    names, rest = _split_include_block(repo_text)
+    if not names:
+        return ResolvedReview(repo_text, [])
+    parts = [rule_set(name).rstrip() for name in names]
+    if rest:
+        parts.append(rest)
+    return ResolvedReview("\n\n".join(parts) + "\n", names)
 
 
 def load_review(repo_text: str | None) -> str:
-    """The repo's REVIEW.md, or the default, or the default plus the repo's."""
-    if repo_text is None or not repo_text.strip():
-        return default_review()
-    lines = repo_text.splitlines()
-    if lines and lines[0].strip().lower() == INCLUDE_DIRECTIVE:
-        rest = "\n".join(lines[1:]).strip()
-        return f"{default_review().rstrip()}\n\n{rest}\n"
-    return repo_text
+    """The rules the model reads. See `resolve_review` for the rule sets."""
+    return resolve_review(repo_text).text
 
 
 # Any line shaped like one of our sentinels, whatever it names. A PR body that

@@ -12,6 +12,22 @@ through two optional files on the base branch:
 
 A repo with neither file gets the default review.
 
+`REVIEW.md` opens with an include block naming the shipped rule sets it wants,
+then carries whatever is true of that repository alone:
+
+```markdown
+@include default
+@include sdk
+
+## The public surface of this SDK
+...
+```
+
+The rule sets live in `reviewbot/rules/` and ship in the wheel, so changing one
+is a pull request here and reaches every repository that includes it — no
+pull request needed in the repositories themselves. See
+[docs/review-rules.md](docs/review-rules.md) for what belongs where.
+
 ## Calling it
 
 Add this workflow to the target repository:
@@ -102,7 +118,7 @@ uv run python evals/score.py evals/cases/*.json --results run.json
 ```
 
 Recording and scoring reach the network and spend tokens, so neither runs in
-the test suite. Use them when changing `reviewbot/defaults/REVIEW.md`, so the
+the test suite. Use them when changing `reviewbot/rules/default.md`, so the
 prompt is tuned against measurements rather than guesses.
 
 ## The end-to-end smoke
