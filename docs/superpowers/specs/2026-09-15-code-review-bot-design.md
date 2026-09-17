@@ -85,7 +85,7 @@ reviewbot/
                   # gate, auto-merge arm/disarm, auto-approve
   render.py       # Result -> comment markdown (sections per policy) + markers
   schema/result.json
-  defaults/REVIEW.md
+  rules/default.md, rules/sdk.md
   defaults/policy.yml
 tests/            # unit + backend fakes; opt-in e2e behind a marker
 evals/            # past PRs with known findings + scoring script
@@ -283,7 +283,7 @@ correctness, contract with docs and tests, security basics, and evidence.
 - `rating`: `patch`, `proof` tiers 1–6; `overall` = weaker, computed by the
   engine, never by the model. The tier meanings are schema semantics, so they
   live in the engine frame that `brief.py` always emits, never in
-  `defaults/REVIEW.md`: a repo file replaces the default in full (§7), so a
+  `rules/default.md`: a repo file replaces the rule sets in full (§7), so a
   repo with its own `REVIEW.md` would otherwise rate against nothing.
 
   `patch`: 1 harmful, 2 wrong, 3 incomplete, 4 works with reservations,
@@ -372,7 +372,7 @@ prerequisites for the operator.
   asserts comment, check run and labels. Run by hand before releases.
 - `evals/`: past PRs with known findings and a scoring script; the first
   case is openclaw/wacli#422 (six known real findings across two rounds).
-  Used to tune `defaults/REVIEW.md` without guessing.
+  Used to tune `rules/default.md` without guessing.
 
 ## 11. Rollout
 

@@ -273,6 +273,40 @@ def test_the_repo_review_md_reaches_the_brief(live_claude, bin_dir, tmp_path):
     assert "HOUSE RULE ONE" in json.loads(seen.read_text())["brief"]
 
 
+def test_an_unknown_include_fails_the_run_with_a_neutral_check(live_claude):
+    """A typo in an include used to be invisible.
+
+    The old loader read only the first line, so `@include defualt` was passed
+    to the model as literal text: the default rules silently vanished and the
+    review came back thin with nothing to say why.
+    """
+    api = FakeGitHub(
+        make_pr(),
+        files={".github/code-review/REVIEW.md": "@include defualt\n\nHouse rules.\n"},
+    )
+    assert review(api) == 1
+    assert api.checks[0]["conclusion"] == "neutral"
+    assert "defualt" in api.checks[0]["summary"]
+    assert api.comments == []
+
+
+def test_the_rule_sets_a_repo_asked_for_reach_the_brief_and_the_footer(
+    live_claude, bin_dir, tmp_path
+):
+    seen = tmp_path / "seen.json"
+    api = FakeGitHub(
+        make_pr(),
+        files={".github/code-review/REVIEW.md": "@include default\n\nHOUSE RULE ONE"},
+    )
+    write_script(bin_dir, "claude", claude_script(VALID_JSON, echo_args=str(seen)))
+    review(api)
+    brief_text = json.loads(seen.read_text())["brief"]
+    assert "Standing review instructions" in brief_text
+    assert "HOUSE RULE ONE" in brief_text
+    assert "@include" not in brief_text
+    assert "rules: default" in api.comments[0]
+
+
 def test_a_broken_policy_fails_the_run_with_a_neutral_check(live_claude):
     api = FakeGitHub(make_pr(), files={".github/code-review/policy.yml": "mode: sometimes\n"})
     assert review(api) == 1
