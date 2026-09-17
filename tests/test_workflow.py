@@ -116,6 +116,46 @@ def test_the_dogfood_workflow_calls_the_reusable_one_locally():
     assert SELF["jobs"]["review"]["uses"] == "./.github/workflows/review.yml"
 
 
+# --- the self review waits for CI, like every other caller -----------------
+#
+# `docs/caller-workflow.yml` spells this out for the SDK repositories and
+# `self-review.yml` had the very bug the template warns against. Measured on
+# this repository, run 35232326112 on PR #15:
+#
+#     reviewbot: skipped, CI has not finished on the head commit
+#
+# `pull_request_target` fires when CI STARTS. `require_ci_green` then refuses
+# the commit, and with no `workflow_run` trigger nothing ever brings the review
+# back. The job reports success having done nothing, so three pull requests
+# carried a green "review" check and no review.
+
+
+def test_the_self_review_waits_for_ci_instead_of_the_push():
+    assert "pull_request_target" not in SELF[ON]
+    assert "workflow_run" in SELF[ON]
+    assert SELF[ON]["workflow_run"]["types"] == ["completed"]
+
+
+def test_the_self_review_watches_this_repositorys_own_ci_workflow():
+    """The trigger names a workflow `name:`, so the two files must agree."""
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    assert ci["name"] in SELF[ON]["workflow_run"]["workflows"]
+
+
+def test_the_self_review_ignores_ci_on_the_default_branch():
+    # workflow_run fires for the push to main too. Without this the merge of
+    # every pull request starts a review that mints tokens and finds nothing.
+    assert "github.event.workflow_run.event == 'pull_request'" in SELF["jobs"]["review"]["if"]
+
+
+def test_the_self_review_can_be_forced_past_an_unchanged_head():
+    with_block = SELF["jobs"]["review"]["with"]
+    assert "force" in SELF[ON]["workflow_dispatch"]["inputs"]
+    # `inputs` is null on a workflow_run, and a null against a boolean-typed
+    # input fails the whole workflow at evaluation with no job and no log.
+    assert with_block["force"] == "${{ inputs.force || false }}"
+
+
 # --- the org-only gate -----------------------------------------------------
 
 
