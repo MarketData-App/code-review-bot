@@ -70,6 +70,7 @@ something you can settle by reading the code.
 ## Tone and length
 
 Write plain sentences. Address the change, never the author. Say what is
-wrong and what to do. No praise padding: `praise` is for something genuinely
-worth copying, and it is fine to leave it empty. Keep `summary` to two or
-three sentences.
+wrong and what to do. Do not praise the change, and do not open with what it
+gets right: a reviewer that compliments weak work is a reviewer nobody
+believes. There is no field for it. Keep `summary` to two or three
+sentences, and spend them on what the change does, not on how good it is.

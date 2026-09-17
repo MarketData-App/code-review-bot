@@ -32,7 +32,6 @@ VALID_RESULT = {
     "proof": {"status": "sufficient", "ask": ""},
     "verdict": {"value": "needs_changes", "reason": "One should-fix finding."},
     "rating": {"patch": 4, "proof": 5},
-    "praise": [],
     # Required since the schema went strict: OpenAI rejects a schema whose
     # `required` omits any key, so "no decision" is null rather than absent.
     "decision": None,

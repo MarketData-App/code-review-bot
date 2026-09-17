@@ -81,7 +81,6 @@ def test_a_review_with_nothing_optional_still_validates():
         "proof": {"status": "not_applicable", "ask": None},
         "verdict": {"value": "ready", "reason": "Fine."},
         "rating": {"patch": 5, "proof": 5},
-        "praise": [],
         "decision": None,
     }
     errors = sorted(Draft202012Validator(schema).iter_errors(minimal), key=str)
@@ -108,7 +107,6 @@ def test_a_review_that_does_use_the_optional_fields_still_validates():
         "proof": {"status": "missing", "ask": "Paste a session."},
         "verdict": {"value": "needs_changes", "reason": "One blocking finding."},
         "rating": {"patch": 2, "proof": 1},
-        "praise": ["Good tests."],
         "decision": {
             "question": "Which way?",
             "options": ["This", "That"],

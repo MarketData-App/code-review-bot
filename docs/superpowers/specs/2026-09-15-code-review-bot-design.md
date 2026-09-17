@@ -294,7 +294,8 @@ correctness, contract with docs and tests, security basics, and evidence.
 
   `render.py` uses the same words in the rating row.
 - `decision` (optional): `question`, `options[]`, `recommendation`.
-- `praise[]`: short positives.
+- There is no praise field. It was removed on 2026-09-17: a reviewer that
+  compliments weak work is one the team stops believing.
 
 Engine adds `backend`, `model`, `reviewed_sha`, `revision`.
 
@@ -302,7 +303,7 @@ Engine adds `backend`, `model`, `reviewed_sha`, `revision`.
 summary; rating row (if enabled); "Decision needed" (if present); "Before
 merge" checklist from blocking findings + proof ask; findings grouped by
 severity with file:line links and backend tag; "since last review":
-resolved / still open / new; praise; footer with backends, models, sha,
+resolved / still open / new; footer with backends, models, sha,
 revision. Hidden markers carry state. Disabled sections do not render.
 
 **Check run** named `policy.check_name` on the head sha. Conclusion:
