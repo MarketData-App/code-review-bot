@@ -4,7 +4,7 @@ name: Code review
 # this; `secrets: inherit` only delivers within one organisation, and the
 # sdk-* repositories are on a user account. See docs/caller-workflow.yml.
 #
-# This job runs with the caller's secrets on a pull_request_target event, so
+# This job runs with the caller's secrets, against a head it did not write, so
 # it must never execute anything from the pull request. It installs the bot
 # from this repository, checks the pull request out read-only with no
 # credentials, and hands the model a read-only sandbox.
@@ -56,10 +56,12 @@ on:
       force:
         description: >
           Review a commit that has already been reviewed. The bot skips an
-          unchanged head by default, because `pull_request_target`'s `edited`
-          type fires on a title or description tweak and would otherwise spend
-          a full review rewriting the same comment. Asking the bot directly --
-          `@marketdata-code-review re-review` -- also forces one.
+          unchanged head by default, because one head arrives here more than
+          once: a caller names every CI workflow in `workflow_run.workflows`,
+          so each of them fires a job, and a re-dispatch fires another. Without
+          the skip, each would spend a full review rewriting the same comment.
+          Asking the bot directly -- `@marketdata-code-review re-review` --
+          also forces one.
         type: boolean
         default: false
       credential-store:
@@ -373,10 +375,12 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --checkout "$GITHUB_WORKSPACE/${{ inputs.checkout-path }}"
 
-      # The lease expires on its own after 20 minutes, so a job killed by
-      # cancel-in-progress strands nothing. This step is still worth having:
-      # it removes the credential from a runner whose filesystem persists, and
-      # it frees the lease immediately rather than in twenty minutes.
+      # The lease expires on its own, so a job killed by cancel-in-progress
+      # strands nothing. `cli._lease_minutes` sizes the TTL from the target
+      # policy at 2 x timeout_minutes + 5, which is 35 minutes on the shipped
+      # default of 15. This step is still worth having: it removes the
+      # credential from a runner whose filesystem persists, and it frees the
+      # lease now rather than half an hour from now.
       #
       # The holder and the condition are the borrow step's, character for
       # character. A check-in under a different holder frees a lease this run

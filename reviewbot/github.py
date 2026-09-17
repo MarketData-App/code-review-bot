@@ -290,10 +290,11 @@ class GitHub:
 
         What GitHub gives us is uneven. Measured on sdk-py#123: codecov filled
         `output.summary` and `output.text`, while every `test (3.x)` and `Lint`
-        check from Actions had all three fields empty. An Actions job produces
-        a bare check run unless the workflow writes a job summary, and this App
-        has no `actions` permission, so job logs are not an option. A repository
-        that wants its results read must publish them; `docs/setup.md` says how.
+        check from Actions had all three fields empty. An Actions job produces a
+        bare check run unless the workflow writes a job summary, and a job
+        summary does not reach the check run either (measured 2026-09-16 on this
+        repository's own CI). So a check with no output is read from its LOG
+        instead, by `job_log` below, which is why the App holds `actions: read`.
 
         Losing this context degrades a review. It must never fail one, so an
         unreadable endpoint reads as "nothing to say".

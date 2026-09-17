@@ -84,9 +84,9 @@ def should_skip(pr: PRFacts, policy: dict, force: bool = False) -> str | None:
     # A commit reviewed once does not need reviewing again. `same_sha` in
     # cli.run already noticed this, but only to reuse the revision NUMBER --
     # the model still ran, spent tokens and rewrote the same comment. Harmless
-    # while the only trigger was a manual dispatch; not harmless once
-    # `pull_request_target` is armed, because its `edited` type fires on a
-    # title or description tweak at an unchanged commit.
+    # while the only trigger was a manual dispatch; not harmless with the
+    # shipped caller, which names every CI workflow in `workflow_run.workflows`
+    # and so reaches one head once per workflow.
     #
     # Two things still force a review: asking for one, and `force`. Asking
     # matters most for `waive` -- without it a waiver could not take effect

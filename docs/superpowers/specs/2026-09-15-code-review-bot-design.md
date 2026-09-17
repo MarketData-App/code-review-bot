@@ -1,6 +1,23 @@
 # Code review bot — design
 
-Date: 2026-09-15. Status: approved design, ready for an implementation plan.
+Date: 2026-09-15. Status: **implemented, and kept as the record of the design
+rather than of the code.** Read it for why the parts exist. Where it and the
+code disagree, the code wins, and these are the differences that matter:
+
+- `proof.required` shipped `true` here and is `false` now. A gate that blocks
+  every pull request is a gate people learn to ignore; `reviewbot/defaults/policy.yml`
+  carries the measurement that decided it.
+- The org-only gate came later. `organisation`, `trusted_associations` and
+  `trusted_authors` are policy keys the section 7 example does not show.
+- `@include` is not one first line keeping the default. A `REVIEW.md` opens
+  with a block of them, each naming a shipped rule set, and
+  `docs/review-rules.md` is the current description.
+- House rules are not scoped by directory. One `REVIEW.md` serves the whole
+  repository.
+- The trigger is `workflow_run`, not `pull_request_target`. See
+  `docs/caller-workflow.yml` for why.
+
+`docs/setup.md` and `docs/review-rules.md` describe the bot as built.
 
 ## 1. Purpose
 

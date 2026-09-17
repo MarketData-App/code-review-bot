@@ -69,7 +69,12 @@ it triggers on CI *finishing* rather than on the push that starts it; and
 `workflow_run` fires for default-branch pushes too, so the job filters to pull
 requests.
 
-Private repositories add `with: { runs-on: '["self-hosted", "marketdata-docker"]' }`.
+The runner follows the target repository's visibility, so neither snippet
+names one: a private repository inside MarketData-App gets the self-hosted
+runner, and a public repository gets `ubuntu-latest`. Pass `runs-on` only to
+override that — a public repository, or any repository on the MarketDataApp
+user account, must not ask for the self-hosted runner, because the org's
+runner group refuses it and the job queues forever with nothing saying why.
 
 The Codex backend needs no secret: the job borrows a short-lived credential
 from a private store. Three things stop it borrowing, and the third surprises
@@ -86,11 +91,13 @@ people:
 That store also needs a keeper publishing into it; until one does,
 `credential-checkout` reports `fetched=false` and reviews run as before. Pass `credential-store: ''` to turn that off.
 
-A repository that prefers an API key sets `OPENAI_API_KEY`, and that key takes
-precedence: the job skips the borrow step entirely, so no borrowed credential
-is ever written and the shared lease is left for the repositories that need
-it. Precedence is decided by the job, not by the Codex CLI reading two
-credentials and choosing one.
+A repository that prefers an API key sets `OPENAI_API_KEY` **and forwards it
+in the caller's `secrets:` block**, which the template does not do for you.
+The key then takes precedence: the job skips the borrow step entirely, so no
+borrowed credential is ever written and the shared lease is left for the
+repositories that need it. Precedence is decided by the job, not by the Codex
+CLI reading two credentials and choosing one. A key that is stored but not
+forwarded does nothing, and the repository borrows as before.
 
 ## Setting it up
 

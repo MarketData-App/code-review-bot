@@ -594,8 +594,9 @@ def test_a_head_that_was_already_reviewed_is_skipped():
 
     `same_sha` already existed but only chose the revision NUMBER -- it never
     stopped the run. That was harmless while the trigger was manual, and stops
-    being harmless the moment `pull_request_target` is armed: its `edited` type
-    fires on a title or description tweak, at an unchanged commit.
+    being harmless with the shipped caller: it names every CI workflow in
+    `workflow_run.workflows`, so one head arrives once per workflow, and a
+    re-dispatch brings it again.
     """
     pr = make_pr(head_sha="a" * 40, previous_state=REVIEWED)
     assert should_skip_reason(pr) == "this commit has already been reviewed"

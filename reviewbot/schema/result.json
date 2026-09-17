@@ -81,7 +81,7 @@
           },
           "title": {
             "type": "string",
-            "description": "One line, under 80 characters."
+            "description": "One line naming the defect, under ten words."
           },
           "body": {
             "type": "string",

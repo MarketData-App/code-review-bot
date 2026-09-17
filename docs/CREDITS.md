@@ -26,7 +26,13 @@ repository.
 
 ## Alejandro Crosa, "Building my AI code review clone" (2026)
 
-The per-repository, directory-scoped house rules come from this article: the
-idea that a shared review engine should read its standing instructions from
-the repository it is reviewing, in prose, scoped by directory, rather than
-carry one set of rules for every project.
+The per-repository house rules come from this article: the idea that a shared
+review engine should read its standing instructions from the repository it is
+reviewing, in prose, rather than carry one set of rules for every project.
+
+The article scopes those rules by directory. This bot does not. It reads one
+`.github/code-review/REVIEW.md` for the whole repository, and a rule that
+applies to one directory says so in its own prose. Directory scoping earns its
+keep when the engine must decide which rules to load; here the whole file is
+loaded either way, so the scoping would only be a second way to say the same
+thing.

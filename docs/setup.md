@@ -19,15 +19,29 @@ The handle that appears on comments is `@marketdata-code-review[bot]`.
 
 ### Repository permissions
 
-Set exactly these, and nothing else:
+Set exactly these:
 
 | Permission | Access | Why |
 |---|---|---|
-| Contents | **Read and write** | Arming and disarming native auto-merge. Nothing else writes. |
+| Actions | Read-only | Reading CI job logs. An Actions check run carries no output of its own, so `GitHub.job_log` fetches the whole log and the reviewer greps it for evidence. |
+| Contents | **Read and write** | Two writers: arming and disarming native auto-merge, and the Codex credential lease, which `credentials.acquire` writes as `codex/lease.json` through the contents API. |
 | Metadata | Read-only | Mandatory. |
 | Pull requests | **Read and write** | The review comment, the approval, the labels. |
 | Issues | **Read and write** | Issue comments on a pull request are issue comments. |
 | Checks | **Read and write** | The check run and its annotations. |
+
+### Organisation permissions
+
+| Permission | Access | Why |
+|---|---|---|
+| Members | Read-only | The org-only gate. `GET /orgs/<org>/members/<login>` decides who may be reviewed. |
+
+**Members: Read decides who gets reviewed at all, so grant it.** Without it the
+membership call answers 403, `is_org_member` returns None, and the gate falls
+back to `author_association`. On a MarketDataApp user-account repository an
+organisation member reads as COLLABORATOR, and the shipped
+`trusted_associations` is `[OWNER, MEMBER]`, so the gate then refuses every
+member of the organisation on every `sdk-*` repository.
 
 Leave every other permission at **No access**. Subscribe to no events.
 
@@ -53,7 +67,7 @@ one fewer value to copy.
 |---|---|---|
 | `CODE_REVIEW_APP_PRIVATE_KEY` | The whole `.pem` file, header and footer included | The same two places |
 | `CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` | The same two places |
-| `OPENAI_API_KEY` | Optional. An API key for the Codex backend. Setting it turns borrowing off for that repository; a repository with no key borrows a credential instead. See "The Codex credential" below | The same two places |
+| `OPENAI_API_KEY` | Optional. An API key for the Codex backend. Setting it turns borrowing off for that repository; a repository with no key borrows a credential instead. The caller workflow must also forward it — see "The Codex credential" below | The same two places |
 
 **Why the MarketDataApp repositories need their own copies.** An organisation
 secret can only be granted to repositories *in that organisation*, and the
@@ -116,6 +130,21 @@ borrowed `auth.json` reaches its runner. That is what makes the API key "take
 precedence" a fact rather than a hope: the two credentials never meet, so the
 Codex CLI is never asked to choose between them.
 
+**Storing the secret is half the job. The caller must forward it.**
+`docs/caller-workflow.yml` names two secrets, because that is what every
+repository needs; `OPENAI_API_KEY` is not one of them. A repository that sets
+the secret and copies the template unchanged forwards nothing: the reusable
+workflow sees an empty value, `HAS_OPENAI_API_KEY` stays false, and the
+repository borrows the shared credential after all. Add the third line to the
+caller's `secrets:` block:
+
+```yaml
+    secrets:
+      CODE_REVIEW_APP_PRIVATE_KEY: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
+
 A credential the job cannot BORROW never fails a review. Every failure the borrow step
 can name exits 0 and reports `fetched=false`; the step also carries a shell
 fallback for the failures it cannot name, such as an empty organisation token.
@@ -170,17 +199,30 @@ If you pin `uses:` to a branch or tag, pin `bot-ref` to the **same** ref.
 default is `main`. A mismatch fails with `invalid choice` on whichever command
 the older side lacks.
 
+**To review a bot's pull requests, name the bot.** A bot account's
+`author_association` is NONE or CONTRIBUTOR and no bot is an organisation
+member, so the gate refuses one by default. Pass
+`with: { trusted-authors: 'some-bot[bot]' }` in the caller, or list the login
+in the repository's `policy.yml` under `trusted_authors`. The two lists are
+merged. Every name on them must be an account the organisation controls.
+
 ### 3a. The CI workflow must be named `Tests`
 
 The trigger matches a workflow by its `name:`, so the name is an interface. All
-five SDK repositories now use `Tests`, which is what lets one caller file be
+six SDK repositories now use `Tests`, which is what lets one caller file be
 copied without edits.
 
-They did not start that way — `Tests` in sdk-go, sdk-php and sdk-py, `CI` in
-sdk-js, `Pull Request` in sdk-java — and naming the wrong one **fails silently**:
-no review ever runs and nothing says why. sdk-java is the trap, because its
-`Main` workflow looks like the obvious candidate and only runs on pushes to the
-default branch.
+The files behind that name are all different — `ci.yml` in sdk-csharp,
+`tests.yml` in sdk-go, `pull-request.yml` in sdk-java, `test.yml` in sdk-js and
+sdk-py, `run-tests.yml` in sdk-php (verified 2026-09-17). That is why the
+trigger reads the `name:` and never the filename. Only sdk-py carries a
+separate `Lint`.
+
+They did not start that way. The audit of 2026-09-15 found `Tests` in sdk-go,
+sdk-php and sdk-py, `CI` in sdk-js, and `Pull Request` in sdk-java. Naming the
+wrong one **fails silently**: no review ever runs and nothing says why. sdk-java
+is the trap, because its `Main` workflow looks like the obvious candidate and
+only runs on pushes to the default branch.
 
 **Find the right workflow empirically, not from filenames.** Look at which
 checks actually appear on an open pull request:
@@ -274,6 +316,12 @@ To re-review a commit deliberately, pass `-f force=true`, or comment
 
 Open a pull request with a small behaviour change and no evidence in the
 description. Within a few minutes it should get one comment, a `Code review`
-check run, and a `review: needs proof` label. If nothing appears, open the
-Actions tab of the target repository: a bot failure always fails the job, and
-its check run says what went wrong.
+check run, and a `review: ready` or `review: needs changes` label.
+
+The comment asks for the missing evidence under "Before merge", and the rating
+row scores `proof` low. It does **not** carry a `review: needs proof` label:
+that label follows the proof gate, and the gate ships off. Turn the gate on for
+the repository first if that is the label you want to see.
+
+If nothing appears, open the Actions tab of the target repository: a bot failure
+always fails the job, and its check run says what went wrong.

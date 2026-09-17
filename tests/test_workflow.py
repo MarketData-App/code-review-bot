@@ -581,7 +581,7 @@ def test_the_caller_template_needs_no_edit_for_an_sdk_repository():
 
     They diverged -- Tests in sdk-go/sdk-php/sdk-py, CI in sdk-js, Pull Request
     in sdk-java -- and naming the wrong one fails SILENTLY: no review runs and
-    nothing says why. All five now use `Tests`, which is what lets this file be
+    nothing says why. All six now use `Tests`, which is what lets this file be
     copied without edits.
     """
     assert CALLER[ON]["workflow_run"]["workflows"] == ["Tests", "Lint"]

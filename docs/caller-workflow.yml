@@ -24,7 +24,8 @@ on:
   workflow_run:
     # LEAVE THIS ALONE. Every SDK repository names its pull-request CI `Tests`,
     # which is what makes this file identical everywhere -- see
-    # docs/setup.md section 4a. It is the workflow's `name:`, never its filename.
+    # docs/setup.md section 4, step 3a. It is the workflow's `name:`, never its
+    # filename.
     #
     # Both are named because the gate looks at EVERY check on the commit, so
     # whichever finishes last is the one whose review actually proceeds; the
@@ -79,6 +80,16 @@ jobs:
     # "Secret CODE_REVIEW_APP_PRIVATE_KEY is required, but not provided while
     # calling", even though the secret is sitting in the repository's settings.
     # Naming them explicitly works on both sides of the boundary.
+    #
+    # These two are what every repository needs. `OPENAI_API_KEY` is not here
+    # because almost no repository sets one: the Codex backend borrows a
+    # short-lived credential instead. A repository that DOES hold its own key
+    # must add the line below as well -- storing the secret is not enough,
+    # because a secret this block does not name never reaches the reusable
+    # workflow, `HAS_OPENAI_API_KEY` stays false, and the repository borrows
+    # the shared credential after all. See docs/setup.md section 3a.
+    #
+    #   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     secrets:
       CODE_REVIEW_APP_PRIVATE_KEY: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
