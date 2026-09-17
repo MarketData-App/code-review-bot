@@ -161,3 +161,93 @@ return type each need, in the same pull request:
 - the resource page under `docs/`
 - the README, when the method list or the quick start changes
 - the `CHANGELOG.md` entry
+
+## 8. Gotchas: where a compliant SDK drifts
+
+These SDKs already implement the requirements document. This section is not a
+checklist of it. It is the short list of places where an ordinary, well-meant
+pull request quietly un-implements something, and where a reviewer reading only
+the diff would pass it.
+
+### Money loses its exactness at the decode step, not in the model
+
+Python, Java and C# hold money in an exact decimal type. Three shapes regress
+that, and all three read as correct:
+
+- **converting after the fact.** `Decimal(str(value))` applied to a number
+  `json.loads` has already made a float. The exact value died at decode, and
+  this only locks the error in. The API's decimal string must reach the decimal
+  type directly.
+- **a new monetary field typed as a float** because the field beside it is one.
+  Money is anything denominated in currency: bid, ask, mid, last, change, OHLC,
+  strike, intrinsic and extrinsic value, underlying price, and the EPS figures.
+  Greeks, implied volatility, percentages and sizes are not money.
+- **removing the decimal-preserving decoder** as a simplification.
+
+Two changes that look like improvements and are not. Making DataFrame or CSV
+output decimal: both are exempt deliberately, polars included, so that identical
+code does not return a different dtype depending on which optional dependency is
+installed. And adding a third-party decimal library to Go, PHP or JavaScript:
+those SDKs are exempt because the language has no native decimal, and a foreign
+money type in a public field forces that dependency on every consumer.
+
+### The no-data path must never widen
+
+404 means no data and returns an empty result. **402 means the API refused a
+valid request because the plan does not cover it, and it must throw.** A new
+endpoint or a new fallback that funnels any other status into the empty result
+is `blocking`. It tells the caller the data does not exist, which is false, and
+it leaves no exception for anyone to catch: a consumer walking back through
+history to find its depth reads a plan denial as the end of the archive and
+truncates silently.
+
+200 and 203 are both success. 203 is cached or historical data.
+
+### New fan-out uses the shared pool
+
+Concurrency is one client-wide pool of 50, as a sliding window: a request starts
+the moment one finishes. A new bulk or batch helper that writes its own loop
+regresses this twice. It waits for the slowest request in each group, and it can
+put more than 50 in flight beside the existing pool.
+
+### `client.rate_limits` is a snapshot, not a per-request answer
+
+It holds the last completed request, so under concurrency it is
+non-deterministic. New per-request logic that reads it carries a race no test
+will catch reliably. Per-request logic reads the rate-limit metadata attached to
+the response it is already holding.
+
+### A new option goes through the configuration cascade
+
+The order is `.env`, then the environment, then client defaults, then the method
+parameter. A setting read straight from the environment inside a method cannot
+be overridden by either higher tier, and the bug appears only for the caller who
+tried.
+
+### The forbidden retries are the tempting ones
+
+Retry above 500 and on network errors. Never a 4xx, and never a 429: adding one
+there reads as resilience and spends the customer's credits against a wall.
+`Retry-After` still overrides the computed backoff, and a status refresh inside
+a retry loop stays non-blocking.
+
+### The timeout is fixed
+
+99 seconds, and not configurable. A pull request that adds a timeout parameter
+because somebody asked for one is a finding, whatever the request said.
+
+### A new error type carries the support context
+
+`request_id` (from `cf-ray`), `request_url`, `status_code`, `timestamp`,
+`message` and `exception_type` — on the exception, or on the returned error
+value in Go. Support staff read these fields, and an error type that omits them
+is invisible to them.
+
+No new log line and no error message carries the token. Redacted means the last
+four characters.
+
+### Dates normalise to US/Eastern
+
+The API answers in Eastern. A change that normalises to UTC, or that compares an
+API date against the machine's clock, is the defect described under "Tests and
+the clock" above. It reaches production code as readily as it reaches tests.

@@ -57,6 +57,47 @@ def test_the_surface_is_referred_to_by_name_and_not_by_a_section_number():
     assert "This repository's own rules, below" in SDK
 
 
+def test_the_gotchas_are_traps_and_not_a_copy_of_the_requirements():
+    """Section 8 exists because the SDKs already IMPLEMENT the requirements.
+
+    What earns a place is a trap: somewhere an ordinary pull request quietly
+    un-implements a requirement and the diff still reads as correct. A
+    requirement an already-compliant SDK cannot drift away from is reference
+    material, and it stays in the requirements document that section 8 cites.
+    """
+    assert "Gotchas: where a compliant SDK drifts" in SDK
+    assert "This section is not a\nchecklist of it" in SDK
+
+
+def test_the_gotchas_keep_the_traps_that_cost_the_most():
+    for trap in [
+        # Exactness dies at decode; converting afterwards only locks the error in.
+        "Decimal(str(value))",
+        # A refusal rendered as no-data truncates a customer's history silently.
+        "it must throw",
+        "200 and 203 are both success",
+        # A new batch helper that writes its own loop breaks the shared pool.
+        "sliding window",
+        # Reading the client snapshot per request is a race no test will catch.
+        "not a per-request answer",
+        # Retrying a 429 reads as resilience and spends the customer's credits.
+        "Never a 4xx",
+        "not configurable",
+    ]:
+        assert trap in SDK, trap
+
+
+def test_the_exempt_sdks_are_told_not_to_add_a_decimal_library():
+    """The well-meant pull request this rule exists to stop."""
+    assert "adding a third-party decimal library to Go, PHP or JavaScript" in SDK
+
+
+def test_the_gotchas_do_not_renumber_the_repository_surface_section():
+    """The repository's own surface section follows this file, so it is 9."""
+    assert "## 8. Gotchas" in SDK
+    assert "## 9." not in SDK
+
+
 def test_the_sdk_rules_do_not_carry_the_rating_tiers():
     """They are layered on the default, which must stay the one source."""
     assert "exemplary" not in SDK
