@@ -105,6 +105,21 @@ def _as_names(value) -> list[str] | None:
     return None
 
 
+def _calls_the_review_workflow(caller: dict) -> bool:
+    """Does any job in this caller invoke the reusable review workflow?
+
+    A caller can carry a flawless `on:` block and still start nothing. Accepts
+    the cross-repository form at any ref and the local
+    `./.github/workflows/review.yml` that self-review.yml uses.
+    """
+    jobs = caller.get("jobs") if isinstance(caller, dict) else None
+    for job in (jobs or {}).values():
+        uses = job.get("uses") if isinstance(job, dict) else None
+        if isinstance(uses, str) and uses.split("@", 1)[0].endswith(".github/workflows/review.yml"):
+            return True
+    return False
+
+
 def activation(
     caller_text: str | None, workflow_files: dict, states: dict | None = None
 ) -> Activation:
@@ -125,6 +140,14 @@ def activation(
         caller = yaml.safe_load(caller_text)
     except yaml.YAMLError as exc:
         return Activation(False, [], [f"code-review.yml could not be read: {exc}"])
+
+    # A PERFECT TRIGGER THAT STARTS NOTHING. The caller must actually call the
+    # reusable workflow; without this a file with the right `on:` and an
+    # unrelated job reported healthy.
+    if not _calls_the_review_workflow(caller):
+        return Activation(
+            False, [], ["no job calls code-review-bot's review.yml; the trigger starts nothing"]
+        )
 
     on = triggers(caller)
     run_on = on.get("workflow_run")
@@ -192,9 +215,16 @@ def activation(
             )
 
     # A DISABLED CALLER runs nothing while looking perfectly correct on disk.
-    caller_state = (states or {}).get("code-review.yml")
-    if caller_state and caller_state != "active":
-        reasons.append(f"code-review.yml is {caller_state} in Actions; it will not run")
+    #
+    # `states is None` means we never asked. A MAPPING means we did, and a file
+    # missing from it is then unverified rather than fine -- an empty or
+    # truncated Actions response must not read as a clean bill of health.
+    if states is not None:
+        caller_state = states.get("code-review.yml")
+        if caller_state is None:
+            reasons.append("code-review.yml has no Actions state; it could not be verified")
+        elif caller_state != "active":
+            reasons.append(f"code-review.yml is {caller_state} in Actions; it will not run")
 
     available = _pull_request_workflows(workflow_files)
     matched = []
@@ -205,12 +235,18 @@ def activation(
                 f"(available: {', '.join(sorted(available)) or 'none'})"
             )
             continue
-        state = (states or {}).get(available[name])
-        if state and state != "active":
-            reasons.append(
-                f"{name!r} ({available[name]}) is {state} in Actions; it fires no workflow_run"
-            )
-            continue
+        if states is not None:
+            state = states.get(available[name])
+            if state is None:
+                reasons.append(
+                    f"{name!r} ({available[name]}) has no Actions state; it could not be verified"
+                )
+                continue
+            if state != "active":
+                reasons.append(
+                    f"{name!r} ({available[name]}) is {state} in Actions; it fires no workflow_run"
+                )
+                continue
         matched.append(name)
 
     if not matched:

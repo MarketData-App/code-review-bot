@@ -511,7 +511,7 @@ def test_workflow_states_reads_the_objects_the_actions_api_actually_returns():
     transport = FakeTransport()
     transport.add(
         "GET",
-        "/repos/o/r/actions/workflows?per_page=100",
+        "/repos/o/r/actions/workflows?per_page=100&page=1",
         data={
             "total_count": 2,
             "workflows": [
@@ -533,5 +533,115 @@ def test_workflow_states_survives_an_unexpected_body():
     from tests.conftest import FakeTransport
 
     transport = FakeTransport()
-    transport.add("GET", "/repos/o/r/actions/workflows?per_page=100", data=["not", "an", "object"])
+    transport.add(
+        "GET", "/repos/o/r/actions/workflows?per_page=100&page=1", data=["not", "an", "object"]
+    )
     assert GitHub("o/r", "t", transport=transport).workflow_states() == {}
+
+
+# --- round four ------------------------------------------------------------
+
+
+def test_the_audit_runs_only_on_a_schedule(audit_workflow):
+    # 323fa556. `workflow_dispatch` lets a writer choose a REF, and both the
+    # workflow file and the checkout then come from that ref -- so a branch
+    # could edit cli.py and read owner-wide tokens out of the environment.
+    # Three accounts besides the owner have push here and main is unprotected,
+    # so this is an escalation, not a theoretical one. A scheduled run always
+    # uses the default branch.
+    on = audit_workflow.get(True) or audit_workflow.get("on")
+    assert set(on) == {"schedule"}
+
+
+def test_the_tokens_are_scoped_to_the_audited_repositories(audit_workflow):
+    # Defence in depth: `owner:` alone mints a token for every repository in
+    # the installation. The audit needs exactly the ones it audits.
+    steps = audit_workflow["jobs"]["audit"]["steps"]
+    tokens = [s for s in steps if "create-github-app-token" in str(s.get("uses", ""))]
+    assert tokens, "no token steps found"
+    scoped = {
+        s["with"]["owner"]: set(str(s["with"]["repositories"]).split())
+        for s in tokens
+        if s["with"].get("repositories")
+    }
+    assert len(scoped) == len(tokens), "a token step has no `repositories:` restriction"
+    env = audit_workflow["env"]
+    for owner, key in (("MarketData-App", "ORG_REPOS"), ("MarketDataApp", "USER_REPOS")):
+        wanted = {r.split("/", 1)[1] for r in env[key].split()}
+        assert scoped[owner] == wanted, f"{owner} token scope does not match {key}"
+
+
+def test_a_caller_with_no_job_calling_the_review_workflow_is_reported():
+    # 585655c7. The trigger can be perfect and still start nothing.
+    no_job = ARMED.replace(
+        "    uses: MarketData-App/code-review-bot/.github/workflows/review.yml@main",
+        "    runs-on: ubuntu-latest\n    steps:\n      - run: echo nothing",
+    )
+    got = callers.activation(no_job, {"t.yml": TESTS_WORKFLOW})
+    assert got.ok is False
+    assert any("review.yml" in r for r in got.reasons)
+
+
+def test_a_caller_with_no_jobs_at_all_is_reported():
+    got = callers.activation(ARMED.split("jobs:")[0], {"t.yml": TESTS_WORKFLOW})
+    assert got.ok is False
+
+
+def test_a_caller_calling_the_review_workflow_at_any_ref_is_accepted():
+    for ref in ("@main", "@v1", "@abc1234"):
+        caller = ARMED.replace("review.yml@main", f"review.yml{ref}")
+        assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is True
+
+
+def test_a_local_call_to_the_reusable_workflow_is_accepted():
+    # self-review.yml's shape: `uses: ./.github/workflows/review.yml`.
+    caller = ARMED.replace(
+        "MarketData-App/code-review-bot/.github/workflows/review.yml@main",
+        "./.github/workflows/review.yml",
+    )
+    assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is True
+
+
+def test_a_requested_state_mapping_that_omits_a_file_is_reported():
+    # 3089e71a. `states={}` means we asked and got nothing back, which is not
+    # the same as `states=None` meaning we never asked.
+    got = callers.activation(ARMED, FILES, states={})
+    assert got.ok is False
+    assert any("state" in r.lower() for r in got.reasons)
+
+
+def test_a_state_mapping_missing_only_the_source_workflow_is_reported():
+    got = callers.activation(ARMED, FILES, states={"code-review.yml": "active"})
+    assert got.ok is False
+
+
+def test_workflow_states_follows_pages():
+    # The endpoint caps at 100 per page. A repository with more workflows than
+    # that would silently lose the later ones, and a missing state now reads as
+    # "unverified", so truncation would turn into a false failure.
+    from reviewbot.github import GitHub
+    from tests.conftest import FakeTransport
+
+    transport = FakeTransport()
+    page1 = [
+        {"name": f"W{i}", "path": f".github/workflows/w{i}.yml", "state": "active"}
+        for i in range(100)
+    ]
+    transport.add(
+        "GET",
+        "/repos/o/r/actions/workflows?per_page=100&page=1",
+        data={"total_count": 101, "workflows": page1},
+    )
+    transport.add(
+        "GET",
+        "/repos/o/r/actions/workflows?per_page=100&page=2",
+        data={
+            "total_count": 101,
+            "workflows": [
+                {"name": "Tests", "path": ".github/workflows/last.yml", "state": "active"}
+            ],
+        },
+    )
+    got = GitHub("o/r", "t", transport=transport).workflow_states()
+    assert len(got) == 101
+    assert got["last.yml"] == "active"

@@ -309,18 +309,27 @@ class GitHub:
         # whatever it is given -- so a dict contributed its KEYS as strings and
         # every repository reported `'str' object has no attribute 'get'`. The
         # stubbed unit tests could not see it; the live fleet could.
-        reply = (
-            self._request("GET", f"/repos/{self.repo}/actions/workflows?per_page=100").data or {}
-        )
-        found = reply.get("workflows") if isinstance(reply, dict) else None
-        out = {}
-        for item in found if isinstance(found, list) else []:
-            if not isinstance(item, dict):
-                continue
-            path = item.get("path") or ""
-            if path.startswith(".github/workflows/"):
-                out[path.rsplit("/", 1)[-1]] = item.get("state") or ""
-        return out
+        out, page = {}, 1
+        while True:
+            reply = (
+                self._request(
+                    "GET", f"/repos/{self.repo}/actions/workflows?per_page=100&page={page}"
+                ).data
+                or {}
+            )
+            found = reply.get("workflows") if isinstance(reply, dict) else None
+            found = found if isinstance(found, list) else []
+            for item in found:
+                if not isinstance(item, dict):
+                    continue
+                path = item.get("path") or ""
+                if path.startswith(".github/workflows/"):
+                    out[path.rsplit("/", 1)[-1]] = item.get("state") or ""
+            # A short page is the last one. Paged here rather than through
+            # `_paged`, which extends a LIST and cannot read this envelope.
+            if len(found) < 100:
+                return out
+            page += 1
 
     def pull_for_sha(self, sha: str) -> int | None:
         """The open pull request whose head is `sha`, or None.

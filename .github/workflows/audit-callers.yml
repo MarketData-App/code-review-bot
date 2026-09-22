@@ -22,20 +22,26 @@ on:
   schedule:
     # 07:00 UTC daily, before the working day in every timezone the team uses.
     - cron: "0 7 * * *"
-  workflow_dispatch:
 
-# NO `pull_request` TRIGGER, AND THIS IS LOAD-BEARING.
+# SCHEDULE ONLY, AND THAT IS LOAD-BEARING.
 #
-# The job mints installation tokens covering every repository of each owner
-# and then runs `uv run reviewbot ...` from the checkout. On a `pull_request`
-# trigger that checkout is the PULL REQUEST'S OWN CODE, so any author could
-# edit cli.py and read the token straight out of the environment -- a
-# privilege escalation to every repository the App is installed on.
+# This job mints App installation tokens and then runs `uv run reviewbot ...`
+# from the checkout. Any trigger that lets someone choose the REF hands those
+# tokens to code that person controls: the workflow file AND the checkout both
+# come from the chosen ref, so a branch could edit cli.py and read the token
+# out of the environment.
 #
-# An earlier version of this file had exactly that, to check a caller template
-# against reality before it shipped. review.yml refuses to let a pull request
-# near a credential, and this workflow holds the same line: schedule and
-# manual dispatch only, both of which run trusted default-branch code.
+# Earlier versions of this file had `pull_request` and then
+# `workflow_dispatch`. Both are escalations here -- three accounts besides the
+# owner have push on this repository and `main` carries no protection, so a
+# writer could reach every repository the App is installed on. A scheduled run
+# always uses the default branch and cannot be pointed elsewhere.
+#
+# To run it by hand, run the command by hand; it needs no special privilege:
+#   GITHUB_TOKEN=$(gh auth token) uv run reviewbot audit-callers <repos...>
+#
+# review.yml refuses to let a pull request near a credential. This holds the
+# same line.
 
 # THE TARGET LIST IS EXPLICIT, not discovered from the App installation.
 #
@@ -80,6 +86,10 @@ jobs:
           app-id: ${{ secrets.CODE_REVIEW_APP_ID }}
           private-key: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
           owner: MarketData-App
+          # Scoped, not owner-wide. `owner:` alone mints a token for every
+          # repository in the installation; the audit needs only what it
+          # audits, and a test asserts this list matches ORG_REPOS.
+          repositories: api
 
       - name: Token for the MarketDataApp user account
         id: user
@@ -88,6 +98,13 @@ jobs:
           app-id: ${{ secrets.CODE_REVIEW_APP_ID }}
           private-key: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
           owner: MarketDataApp
+          repositories: >-
+            sdk-py
+            sdk-go
+            sdk-js
+            sdk-java
+            sdk-csharp
+            sdk-php
 
       # One step per owner, because each needs ITS OWN token in the
       # environment; an organisation installation token cannot read the user
