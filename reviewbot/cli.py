@@ -757,6 +757,24 @@ def credential_checkout(
         return 0
 
 
+def _positive_days(text: str) -> int:
+    """A window of zero or fewer days is refused rather than reported on.
+
+    `--days 0` divided by a one-second window and printed a share in the
+    millions; a negative value asked GitHub for commits from the future and
+    printed an empty week. Both look like answers.
+    """
+    import argparse as _argparse
+
+    try:
+        value = int(text)
+    except ValueError:
+        raise _argparse.ArgumentTypeError(f"{text!r} is not a whole number of days") from None
+    if value <= 0:
+        raise _argparse.ArgumentTypeError("--days must be at least 1")
+    return value
+
+
 def lease_report(store: str, days: int, token: str) -> int:
     """Print who held the shared Codex credential, and for how long.
 
@@ -774,10 +792,14 @@ def lease_report(store: str, days: int, token: str) -> int:
 
     now = _dt.datetime.now(_dt.UTC)
     try:
+        # MARGIN, not the window itself: a hold that began before the window
+        # and ended inside it arrives as a lone `lease freed` that pairs with
+        # nothing, so both the hold and its in-window time disappear.
+        # `credentials.lease_report` clips what this returns back to the window.
         history = _store_api(store, token).commits(
             credentials.LEASE_PATH,
             credentials.LEASE_BRANCH,
-            now - _dt.timedelta(days=days),
+            now - _dt.timedelta(days=days) - credentials.HISTORY_MARGIN,
         )
     except GitHubError as exc:
         print(f"reviewbot lease-report: cannot read {store}: {scrub(str(exc))}")
@@ -906,7 +928,12 @@ def main(argv: list[str] | None = None) -> int:
         default="MarketData-App/code-review-credentials",
         help="owner/name of the credential store",
     )
-    report.add_argument("--days", type=int, default=7, help="how far back to read (default 7)")
+    report.add_argument(
+        "--days",
+        type=_positive_days,
+        default=7,
+        help="how far back to read, in whole days (default 7)",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "derive-credential":

@@ -278,3 +278,110 @@ def test_a_single_hold_is_not_pluralised(week):
     text = credentials.lease_report(spans, API, days=7, now=dt.datetime(2026, 9, 22, tzinfo=dt.UTC))
     assert "1 holds" not in text
     assert "1 hold" in text
+
+
+# --- the window boundary and overlap ---------------------------------------
+#
+# Both found by the bot's own review of PR #19 (findings a73a0e96, 0585bcb6).
+
+WINDOW_START = dt.datetime(2026, 9, 15, tzinfo=dt.UTC)
+NOW = dt.datetime(2026, 9, 22, tzinfo=dt.UTC)
+
+
+def test_a_hold_that_began_before_the_window_is_clipped_not_dropped():
+    # The fetch starts at the cutoff, so such a hold arrives as a lone `freed`.
+    # Dropping it lost both the hold and the in-window time it really occupied.
+    # The fetch now reaches back far enough to carry the `taken` with it.
+    spans = credentials.lease_spans(
+        [
+            freed("o/r#1#a-1", "2026-09-15T00:10:00Z"),
+            taken("o/r#1#a-1", "2026-09-14T23:55:00Z"),
+        ]
+    )
+    assert spans[0].seconds == 900
+    clipped = credentials.clip(spans, WINDOW_START, NOW)
+    assert len(clipped) == 1
+    assert clipped[0].seconds == 600  # only the ten minutes inside the window
+
+
+def test_a_hold_entirely_before_the_window_is_dropped():
+    spans = credentials.lease_spans(
+        [
+            freed("o/r#1#a-1", "2026-09-14T23:50:00Z"),
+            taken("o/r#1#a-1", "2026-09-14T23:40:00Z"),
+        ]
+    )
+    assert credentials.clip(spans, WINDOW_START, NOW) == []
+
+
+def test_an_unfinished_hold_from_before_the_window_still_shows_as_never_freed():
+    spans = credentials.lease_spans([taken("o/r#1#a-1", "2026-09-14T23:40:00Z")])
+    clipped = credentials.clip(spans, WINDOW_START, NOW)
+    assert len(clipped) == 1
+    assert clipped[0].closed is False
+
+
+def test_occupancy_counts_two_overlapping_holds_once():
+    # 10:00-10:20 and 10:10-10:30 occupy thirty minutes, not forty.
+    spans = credentials.lease_spans(
+        [
+            freed("o/r#2#b-1", "2026-09-21T10:30:00Z"),
+            taken("o/r#2#b-1", "2026-09-21T10:10:00Z"),
+            freed("o/r#1#a-1", "2026-09-21T10:20:00Z"),
+            taken("o/r#1#a-1", "2026-09-21T10:00:00Z"),
+        ]
+    )
+    assert sum(s.seconds for s in spans) == 2400  # what the report used to divide
+    assert credentials.occupied_seconds(spans) == 1800
+
+
+def test_occupancy_of_disjoint_holds_is_their_sum():
+    spans = credentials.lease_spans(
+        [
+            freed("o/r#2#b-1", "2026-09-21T11:10:00Z"),
+            taken("o/r#2#b-1", "2026-09-21T11:00:00Z"),
+            freed("o/r#1#a-1", "2026-09-21T10:10:00Z"),
+            taken("o/r#1#a-1", "2026-09-21T10:00:00Z"),
+        ]
+    )
+    assert credentials.occupied_seconds(spans) == 1200
+
+
+def test_the_busy_share_never_exceeds_the_window():
+    # Ten holders covering the same hour cannot make the credential 1000% busy.
+    history = []
+    for i in range(10):
+        history += [
+            freed(f"o/r#{i}#r{i}-1", "2026-09-21T11:00:00Z"),
+            taken(f"o/r#{i}#r{i}-1", "2026-09-21T10:00:00Z"),
+        ]
+    spans = credentials.lease_spans(history)
+    text = credentials.lease_report(spans, API, days=1, now=dt.datetime(2026, 9, 22, tzinfo=dt.UTC))
+    share = float(text.split("busy ")[1].split("%")[0])
+    assert 0 < share <= 100
+
+
+def test_the_report_clips_to_its_own_window():
+    spans = credentials.lease_spans(
+        [
+            freed("o/r#1#a-1", "2026-09-15T00:10:00Z"),
+            taken("o/r#1#a-1", "2026-09-14T23:55:00Z"),
+        ]
+    )
+    text = credentials.lease_report(spans, API, days=7, now=NOW)
+    assert "1 hold" in text
+    assert "0h 10m" in text  # not 0h 15m
+
+
+def test_a_nonpositive_window_is_refused(monkeypatch):
+    # GITHUB_TOKEN is set on purpose: without it `main` exits on the missing
+    # token instead, and this test would pass without the validation existing.
+    from reviewbot import cli
+
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setattr(
+        cli, "_store_api", lambda repo, token: pytest.fail("the API must not be reached")
+    )
+    for bad in ("0", "-3"):
+        with pytest.raises(SystemExit):
+            cli.main(["lease-report", "--days", bad])

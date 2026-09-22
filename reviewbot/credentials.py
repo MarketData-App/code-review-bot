@@ -177,6 +177,19 @@ def release(api, holder: str) -> None:
 
 _LEASE_MESSAGE = re.compile(r"^lease (taken|freed) by (\S+)$")
 
+# How far BEFORE the reported window to read the history.
+#
+# A hold that began before the window and ended inside it arrives as a lone
+# `lease freed`, and `lease_spans` cannot pair it -- so the hold and the time
+# it really occupied both vanish from the report. Reading back far enough to
+# carry its `lease taken` fixes that, and `clip` then trims it to the window.
+#
+# Two hours is an upper bound on one hold, not a guess: `review.yml` caps the
+# whole job at 90 minutes, and a lease outlives its holder by at most its TTL
+# (`2 * timeout_minutes + 5`, under 45 minutes for the timeout_minutes the
+# arithmetic in `_lease_minutes` permits).
+HISTORY_MARGIN = datetime.timedelta(hours=2)
+
 
 @dataclasses.dataclass(frozen=True)
 class LeaseSpan:
@@ -263,6 +276,58 @@ def lease_spans(commits: list[dict]) -> list[LeaseSpan]:
     return out
 
 
+def clip(
+    spans: list[LeaseSpan], start: datetime.datetime, end: datetime.datetime
+) -> list[LeaseSpan]:
+    """The spans that touch [start, end], trimmed to it.
+
+    The margin above means the history reaches back past the window, so every
+    figure in the report would otherwise count time outside the window it
+    names. A span entirely outside is dropped; one that straddles a boundary
+    keeps only the part inside.
+
+    An unclosed span keeps its open end: it contributes no duration anywhere,
+    and it must still be counted as never freed.
+    """
+    out = []
+    for span in spans:
+        if span.end is not None and span.end <= start:
+            continue
+        if span.start >= end:
+            continue
+        out.append(
+            dataclasses.replace(
+                span,
+                start=max(span.start, start),
+                end=None if span.end is None else min(span.end, end),
+            )
+        )
+    return out
+
+
+def occupied_seconds(spans: list[LeaseSpan]) -> int:
+    """How long the credential was busy: the UNION of the holds, not their sum.
+
+    The two differ exactly when holds overlap, which this module reports
+    separately and therefore cannot pretend does not happen. Summing instead
+    double-counts the overlap and can report a credential busy for more than
+    100% of the window -- a figure that discredits the whole report.
+    """
+    intervals = sorted((s.start, s.end) for s in spans if s.closed)
+    total = 0.0
+    open_start = open_end = None
+    for begins, ends in intervals:
+        if open_end is None or begins > open_end:
+            if open_end is not None:
+                total += (open_end - open_start).total_seconds()
+            open_start, open_end = begins, ends
+        else:
+            open_end = max(open_end, ends)
+    if open_end is not None:
+        total += (open_end - open_start).total_seconds()
+    return int(total)
+
+
 def overlaps(spans: list[LeaseSpan]) -> int:
     """How many closed holds began while another was still open.
 
@@ -291,18 +356,25 @@ def _holds(count: int) -> str:
 
 def lease_report(spans: list[LeaseSpan], store: str, days: int, now: datetime.datetime) -> str:
     """The human-readable report `reviewbot lease-report` prints."""
+    window_start = now - datetime.timedelta(days=days)
+    spans = clip(spans, window_start, now)
     closed = [s for s in spans if s.closed]
     unclosed = len(spans) - len(closed)
+    # `total` is machine time spent holding and double-counts an overlap on
+    # purpose: it answers "how much work did the credential carry?".
+    # `occupied` answers "how much of the window was it unavailable?" and must
+    # count an overlap once. Reporting one number for both questions was wrong.
     total = sum(s.seconds for s in closed)
-    window = max(1, days * 86400)
-    start = (now - datetime.timedelta(days=days)).date()
+    occupied = occupied_seconds(spans)
+    window = days * 86400
+    clashes = overlaps(spans)
 
     head = (
         f"Codex credential lease · {store}",
-        f"{start} to {now.date()} ·{_holds(len(spans))} · {_hm(total)} held"
+        f"{window_start.date()} to {now.date()} ·{_holds(len(spans))} · {_hm(total)} held"
         + (f" · {unclosed} never freed" if unclosed else ""),
-        f"The credential was busy {100 * total / window:.1f}% of the window."
-        + (f" {overlaps(spans)} hold(s) overlapped another." if overlaps(spans) else ""),
+        f"The credential was busy {100 * occupied / window:.1f}% of the window."
+        + (f" {clashes} hold(s) overlapped another." if clashes else ""),
     )
 
     by_day = collections.defaultdict(lambda: [0, 0])
