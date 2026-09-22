@@ -92,6 +92,43 @@ is ever written and the shared lease is left for the repositories that need
 it. Precedence is decided by the job, not by the Codex CLI reading two
 credentials and choosing one.
 
+### Is the shared credential a bottleneck?
+
+`acquire` and `release` each commit `codex/lease.json`, so the store's history
+is a durable record of every borrow. `lease-report` reads it:
+
+```bash
+GITHUB_TOKEN=$(gh auth token) uv run reviewbot lease-report --days 7
+```
+
+It prints holds and time held, by day and by repository, plus the share of the
+window the credential was busy and any holds that overlapped another.
+
+It counts **holds, not waits.** A run that blocks on the lease writes no commit
+and never appears here; it prints to its own job log instead. To count those,
+grep a target repository's Actions log:
+
+| String | Meaning |
+|---|---|
+| `reviewbot: the credential lease is held` | One line per 20 seconds waited. |
+| `reviewbot: the credential lease was still held after` | The run gave up and reviewed without Codex. |
+
+### Why a backend is missing from the footer
+
+The comment footer renders every backend that did not contribute as
+`<name> unavailable`. That one word covers three different things, so the job
+log names which one:
+
+| Log line | Meaning |
+|---|---|
+| `<name> is not installed or not authenticated; it will not review` | The CLI is absent or holds no credential. Nothing ran. |
+| `<name> was not invoked; <other> answered first under mode: <mode>` | Healthy, and not needed. `first` and `fallback` stop at the backend that answers. |
+| `<name>: <reason>` | It ran and failed. The reason is the CLI's own, scrubbed of anything token-shaped. |
+
+The middle row is the common one and reads as a fault in the footer when it is
+not: on a repository with `backends: [codex, claude]` and `mode: fallback`,
+every successful review reports `claude unavailable` because Codex answered.
+
 ## Setting it up
 
 The GitHub App is created by hand, once. `docs/setup.md` has the exact

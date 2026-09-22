@@ -262,6 +262,18 @@ class GitHub:
             return ""
         return "\n".join(self._TIMESTAMP.sub("", line) for line in raw.splitlines())
 
+    def commits(self, path: str, branch: str, since) -> list[dict]:
+        """Every commit touching `path` on `branch` at or after `since`.
+
+        Newest first, which is what the API returns; `credentials.lease_spans`
+        reverses it. The lease file is written twice per review, so a busy week
+        is a few hundred commits and the paging in `_paged` is enough.
+        """
+        return self._paged(
+            f"/repos/{self.repo}/commits"
+            f"?path={urllib.parse.quote(path)}&sha={urllib.parse.quote(branch)}&since={urllib.parse.quote(since.isoformat())}"
+        )
+
     def pull_for_sha(self, sha: str) -> int | None:
         """The open pull request whose head is `sha`, or None.
 

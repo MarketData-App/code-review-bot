@@ -757,6 +757,35 @@ def credential_checkout(
         return 0
 
 
+def lease_report(store: str, days: int, token: str) -> int:
+    """Print who held the shared Codex credential, and for how long.
+
+    UNLIKE the credential commands, this one is allowed to fail. It reviews
+    nothing: a person runs it to answer "is the shared plan the bottleneck?",
+    and a report that silently prints an empty week would answer it wrongly.
+
+    It reads the store's commit history, which records every HOLD. It cannot
+    count a run that WAITED -- a blocked job writes no commit -- and the report
+    it prints says so rather than leaving a reader to assume otherwise.
+    """
+    import datetime as _dt
+
+    from reviewbot import credentials
+
+    now = _dt.datetime.now(_dt.UTC)
+    try:
+        history = _store_api(store, token).commits(
+            credentials.LEASE_PATH,
+            credentials.LEASE_BRANCH,
+            now - _dt.timedelta(days=days),
+        )
+    except GitHubError as exc:
+        print(f"reviewbot lease-report: cannot read {store}: {scrub(str(exc))}")
+        return 1
+    print(credentials.lease_report(credentials.lease_spans(history), store, days, now))
+    return 0
+
+
 def credential_checkin(store: str, holder: str, codex_home: str, token: str) -> int:
     """Delete the borrowed credential, then free the lease. Never fails.
 
@@ -870,6 +899,14 @@ def main(argv: list[str] | None = None) -> int:
     checkin.add_argument("--store", required=True, help="owner/name of the credential store")
     checkin.add_argument("--holder", required=True, help="who took the lease")
     checkin.add_argument("--codex-home", required=True, help="the directory to remove")
+
+    report = sub.add_parser("lease-report", help="who held the Codex credential, and for how long")
+    report.add_argument(
+        "--store",
+        default="MarketData-App/code-review-credentials",
+        help="owner/name of the credential store",
+    )
+    report.add_argument("--days", type=int, default=7, help="how far back to read (default 7)")
     args = parser.parse_args(argv)
 
     if args.command == "derive-credential":
@@ -894,6 +931,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "credential-checkin":
         return credential_checkin(args.store, args.holder, args.codex_home, token)
+    if args.command == "lease-report":
+        return lease_report(args.store, args.days, token)
 
     if not args.repo:
         parser.error("GITHUB_REPOSITORY is not set and --repo was not given")

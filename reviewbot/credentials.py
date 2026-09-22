@@ -15,9 +15,12 @@ Codex fails to parse the file without it; it need not be real.
 
 import base64
 import binascii
+import collections
 import copy
+import dataclasses
 import datetime
 import json
+import re
 
 PLACEHOLDER = "REVIEWBOT-PLACEHOLDER-NOT-A-REFRESH-TOKEN"
 
@@ -157,3 +160,176 @@ def release(api, holder: str) -> None:
     api.put_file(
         LEASE_PATH, json.dumps(body, indent=2) + "\n", f"lease freed by {holder}", LEASE_BRANCH, sha
     )
+
+
+# --- the lease history -----------------------------------------------------
+#
+# `acquire` and `release` each write `codex/lease.json`, so the file's commit
+# history is a complete record of who held the shared credential and when. It
+# is the only durable one: the job log expires with the Actions run, and the
+# review comment says `codex unavailable` without ever saying why.
+#
+# What the history CANNOT show is a run that WAITED. A blocked job writes no
+# commit -- it sits in `credential_checkout`'s poll loop printing
+# `the credential lease is held` to its own log and nothing else. So this
+# module reports occupancy, and `lease_report` points the reader at the log
+# string for the question the history cannot answer.
+
+_LEASE_MESSAGE = re.compile(r"^lease (taken|freed) by (\S+)$")
+
+
+@dataclasses.dataclass(frozen=True)
+class LeaseSpan:
+    """One borrow of the credential, from `lease taken` to `lease freed`."""
+
+    holder: str
+    repo: str
+    pr: int | None
+    run: str
+    start: datetime.datetime
+    end: datetime.datetime | None
+
+    @property
+    def closed(self) -> bool:
+        return self.end is not None
+
+    @property
+    def seconds(self) -> int:
+        """How long it was held. ZERO when it was never freed, never a guess.
+
+        A holder that died leaves the lease to its TTL, and the history does
+        not record when the job stopped working. A plausible-looking duration
+        here would be the one number a reader takes at face value.
+        """
+        if self.end is None:
+            return 0
+        return int((self.end - self.start).total_seconds())
+
+
+def _parse_holder(holder: str) -> tuple[str, int | None, str]:
+    """`owner/name#pr#run-attempt` -> (repo, pr, run).
+
+    The workflow builds this string, so a shape change must degrade rather
+    than raise: a report is a diagnostic and must survive the thing it is
+    diagnosing.
+    """
+    parts = holder.split("#")
+    repo = parts[0]
+    pr = None
+    if len(parts) > 1 and parts[1].isdigit():
+        pr = int(parts[1])
+    run = parts[2] if len(parts) > 2 else ""
+    return repo, pr, run
+
+
+def lease_spans(commits: list[dict]) -> list[LeaseSpan]:
+    """Pair every `lease taken` with its `lease freed`, oldest first.
+
+    `commits` arrives newest first, the order the API returns, and is reversed
+    here rather than at the call site.
+
+    A `freed` with no open `taken` is dropped: the window's first commit is
+    often the release of a borrow that began before it. An unreadable message
+    is skipped for the same reason `_held` treats an unparseable lease as free
+    -- this must not be the thing that breaks.
+    """
+    open_spans: dict[str, datetime.datetime] = {}
+    out: list[LeaseSpan] = []
+    for entry in reversed(commits or []):
+        body = (entry.get("commit") or {}).get("message") or ""
+        match = _LEASE_MESSAGE.match(body.strip().splitlines()[0] if body.strip() else "")
+        if not match:
+            continue
+        verb, holder = match.group(1), match.group(2)
+        stamp = ((entry.get("commit") or {}).get("committer") or {}).get("date")
+        try:
+            when = datetime.datetime.fromisoformat((stamp or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=datetime.UTC)
+        if verb == "taken":
+            open_spans[holder] = when
+            continue
+        start = open_spans.pop(holder, None)
+        if start is None:
+            continue
+        repo, pr, run = _parse_holder(holder)
+        out.append(LeaseSpan(holder, repo, pr, run, start, when))
+    for holder, start in open_spans.items():
+        repo, pr, run = _parse_holder(holder)
+        out.append(LeaseSpan(holder, repo, pr, run, start, None))
+    out.sort(key=lambda s: s.start)
+    return out
+
+
+def overlaps(spans: list[LeaseSpan]) -> int:
+    """How many closed holds began while another was still open.
+
+    This is the lease's whole purpose, so it is worth counting. An overlap
+    means a TTL expired under a job that was still working. The borrowed
+    credential survives it -- a copy that cannot refresh cannot be killed by
+    concurrent use, which is the argument `derive` rests on -- but a reader
+    chasing a slow review should see that it happened.
+    """
+    closed = sorted((s for s in spans if s.closed), key=lambda s: s.start)
+    count = 0
+    for i, span in enumerate(closed):
+        if any(other.end > span.start for other in closed[:i]):
+            count += 1
+    return count
+
+
+def _hm(seconds: int) -> str:
+    return f"{seconds // 3600}h {(seconds % 3600) // 60:02d}m"
+
+
+def _holds(count: int) -> str:
+    """`hold` is padded to the width of `holds` so the columns stay aligned."""
+    return f"{count:>4} " + ("hold " if count == 1 else "holds")
+
+
+def lease_report(spans: list[LeaseSpan], store: str, days: int, now: datetime.datetime) -> str:
+    """The human-readable report `reviewbot lease-report` prints."""
+    closed = [s for s in spans if s.closed]
+    unclosed = len(spans) - len(closed)
+    total = sum(s.seconds for s in closed)
+    window = max(1, days * 86400)
+    start = (now - datetime.timedelta(days=days)).date()
+
+    head = (
+        f"Codex credential lease · {store}",
+        f"{start} to {now.date()} ·{_holds(len(spans))} · {_hm(total)} held"
+        + (f" · {unclosed} never freed" if unclosed else ""),
+        f"The credential was busy {100 * total / window:.1f}% of the window."
+        + (f" {overlaps(spans)} hold(s) overlapped another." if overlaps(spans) else ""),
+    )
+
+    by_day = collections.defaultdict(lambda: [0, 0])
+    by_repo = collections.defaultdict(lambda: [0, 0])
+    for span in spans:
+        for bucket in (by_day[span.start.date().isoformat()], by_repo[span.repo]):
+            bucket[0] += 1
+            bucket[1] += span.seconds
+
+    lines = [*head, "", "By day"]
+    for day in sorted(by_day, reverse=True):
+        holds, held = by_day[day]
+        lines.append(f"  {day}  {_holds(holds)}   {_hm(held)}")
+    lines += ["", "By repository"]
+    for repo in sorted(by_repo, key=lambda r: (-by_repo[r][1], r)):
+        holds, held = by_repo[repo]
+        share = f"{100 * held / total:.0f}%" if total else "0%"
+        lines.append(f"  {repo:<34}{_holds(holds)}   {_hm(held)}   {share:>4}")
+
+    # THE LIMIT OF THIS REPORT, stated in it rather than in a docstring nobody
+    # reading the output will open. A blocked run writes no commit, so no
+    # figure above counts one.
+    lines += [
+        "",
+        "This history counts HOLDS, not waits: a run blocked on the lease writes",
+        "no commit here. To count those, grep the target repository's Actions log",
+        "for `reviewbot: the credential lease is held`, one line per 20s waited,",
+        "and `still held after` for a run that gave up.",
+    ]
+    return "\n".join(lines)
