@@ -385,3 +385,89 @@ def test_a_nonpositive_window_is_refused(monkeypatch):
     for bad in ("0", "-3"):
         with pytest.raises(SystemExit):
             cli.main(["lease-report", "--days", bad])
+
+
+# --- both message formats --------------------------------------------------
+#
+# The message stopped carrying `<owner>/<repo>#<pr>` on 2026-09-22, because
+# GitHub read it as a cross-reference and posted it to the pull request's
+# timeline. The store keeps months of the old form, so both must parse.
+
+
+def new_taken(repo, pr, run, when):
+    return commit(f"lease taken by {repo} pull {pr} run {run}", when)
+
+
+def new_freed(repo, pr, run, when):
+    return commit(f"lease freed by {repo} pull {pr} run {run}", when)
+
+
+def test_the_new_message_format_parses():
+    spans = credentials.lease_spans(
+        [
+            new_freed("MarketData-App/api", 463, "35743856939-1", "2026-09-22T14:59:47Z"),
+            new_taken("MarketData-App/api", 463, "35743856939-1", "2026-09-22T14:59:06Z"),
+        ]
+    )
+    assert len(spans) == 1
+    assert spans[0].repo == "MarketData-App/api"
+    assert spans[0].pr == 463
+    assert spans[0].run == "35743856939-1"
+    assert spans[0].seconds == 41
+
+
+def test_the_old_message_format_still_parses():
+    spans = credentials.lease_spans(
+        [
+            freed("MarketData-App/api#463#35743856939-1", "2026-09-22T14:59:47Z"),
+            taken("MarketData-App/api#463#35743856939-1", "2026-09-22T14:59:06Z"),
+        ]
+    )
+    assert len(spans) == 1
+    assert spans[0].repo == "MarketData-App/api"
+    assert spans[0].pr == 463
+    assert spans[0].run == "35743856939-1"
+
+
+def test_a_history_holding_both_formats_pairs_each_within_its_own():
+    # What the store looks like across the change: older holds in the old
+    # form, newer ones in the new. A span never mixes the two -- both writes
+    # come from one run, on one version of the bot.
+    spans = credentials.lease_spans(
+        [
+            new_freed("o/r", 2, "b-1", "2026-09-22T11:00:00Z"),
+            new_taken("o/r", 2, "b-1", "2026-09-22T10:50:00Z"),
+            freed("o/r#1#a-1", "2026-09-22T10:20:00Z"),
+            taken("o/r#1#a-1", "2026-09-22T10:00:00Z"),
+        ]
+    )
+    assert [s.run for s in spans] == ["a-1", "b-1"]
+    assert [s.seconds for s in spans] == [1200, 600]
+
+
+def test_a_message_with_no_pull_request_parses():
+    spans = credentials.lease_spans(
+        [
+            commit("lease freed by verification", "2026-09-22T10:01:00Z"),
+            commit("lease taken by verification", "2026-09-22T10:00:00Z"),
+        ]
+    )
+    assert spans[0].repo == "verification"
+    assert spans[0].pr is None
+
+
+def test_the_message_a_lease_write_produces_is_the_message_the_report_reads():
+    # The writer and the reader are one round trip, so a change to either
+    # without the other fails here rather than in the next week's report.
+    holder = "MarketData-App/api#463#35743856939-1"
+    spans = credentials.lease_spans(
+        [
+            commit(credentials.lease_message("freed", holder), "2026-09-22T10:10:00Z"),
+            commit(credentials.lease_message("taken", holder), "2026-09-22T10:00:00Z"),
+        ]
+    )
+    assert len(spans) == 1
+    assert spans[0].repo == "MarketData-App/api"
+    assert spans[0].pr == 463
+    assert spans[0].run == "35743856939-1"
+    assert spans[0].seconds == 600
