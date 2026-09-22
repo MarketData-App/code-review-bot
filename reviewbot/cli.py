@@ -757,6 +757,45 @@ def credential_checkout(
         return 0
 
 
+def audit_callers(repos: list, token: str) -> int:
+    """Assert that every named repository will actually start a review.
+
+    Exits NON-ZERO when any will not. That is the whole point: the failure
+    being guarded against is silent, so the guard must be loud. A warning
+    printed into a green run would reproduce the bug it is checking for.
+
+    An unreadable repository fails too. "We could not look" is not "it is
+    fine" -- a deleted or renamed caller answers 404, and an audit that
+    shrugged at that would report the broken case as healthy.
+    """
+    from reviewbot import callers as callers_mod
+
+    results = {}
+    unreadable = {}
+    for repo in repos:
+        try:
+            files = _store_api(repo, token).workflow_files()
+        except Exception as exc:  # noqa: BLE001 - any failure to read is a failure
+            unreadable[repo] = f"{type(exc).__name__}: {scrub(str(exc))}"
+            continue
+        results[repo] = callers_mod.activation(files.get("code-review.yml"), files)
+
+    print(f"Code review activation, {len(repos)} repositor{'y' if len(repos) == 1 else 'ies'}\n")
+    if results:
+        print(callers_mod.report(results))
+    for repo, why in sorted(unreadable.items()):
+        print(f"  {repo:<34} COULD NOT BE READ: {why}")
+
+    broken = [r for r, g in results.items() if not g.ok] + list(unreadable)
+    if broken:
+        print(
+            f"\n{len(broken)} of {len(repos)} will not start a review: {', '.join(sorted(broken))}"
+        )
+        return 1
+    print(f"\nAll {len(repos)} will start a review when a pull request's CI finishes.")
+    return 0
+
+
 def _positive_days(text: str) -> int:
     """A window of zero or fewer days is refused rather than reported on.
 
@@ -922,6 +961,15 @@ def main(argv: list[str] | None = None) -> int:
     checkin.add_argument("--holder", required=True, help="who took the lease")
     checkin.add_argument("--codex-home", required=True, help="the directory to remove")
 
+    audit = sub.add_parser(
+        "audit-callers", help="assert every target repository will actually start a review"
+    )
+    audit.add_argument(
+        "repos",
+        nargs="+",
+        help="owner/name of each target repository to check",
+    )
+
     report = sub.add_parser("lease-report", help="who held the Codex credential, and for how long")
     report.add_argument(
         "--store",
@@ -960,6 +1008,8 @@ def main(argv: list[str] | None = None) -> int:
         return credential_checkin(args.store, args.holder, args.codex_home, token)
     if args.command == "lease-report":
         return lease_report(args.store, args.days, token)
+    if args.command == "audit-callers":
+        return audit_callers(args.repos, token)
 
     if not args.repo:
         parser.error("GITHUB_REPOSITORY is not set and --repo was not given")

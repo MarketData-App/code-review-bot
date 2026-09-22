@@ -1,0 +1,104 @@
+name: Audit callers
+
+# DOES EVERY TARGET REPOSITORY STILL START A REVIEW?
+#
+# `on.workflow_run.workflows` in a caller lists workflow `name:` values, and
+# GitHub matches them silently. A name that matches no workflow never fires:
+# no warning, no failed run, no log line. Reviews just stop, and the
+# repository looks healthy because every other check is green.
+#
+# That is not hypothetical. Both of these were live on 2026-09-22:
+#
+#   * Five SDK callers listed `workflows: ["Tests", "Lint"]` into repositories
+#     with no workflow named `Lint`. Reviews still ran via `Tests`, so nothing
+#     ever surfaced the dead half.
+#   * sdk-js's pull-request workflow was once named `CI`, sdk-java's
+#     `Pull Request`. Both are `Tests` today. Renaming either one back would
+#     switch that repository's reviews off in silence.
+#
+# So this asks the question on a schedule and goes RED when the answer is no.
+# A warning printed into a green run would reproduce the bug it is checking.
+on:
+  schedule:
+    # 07:00 UTC daily, before the working day in every timezone the team uses.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+  # Also on a change to the bot's own workflow templates or to the auditor, so
+  # a caller template edited here is checked against reality before it ships.
+  pull_request:
+    paths:
+      - ".github/workflows/audit-callers.yml"
+      - "reviewbot/callers.py"
+      - "reviewbot/cli.py"
+
+# THE TARGET LIST IS EXPLICIT, not discovered from the App installation.
+#
+# Discovery would answer "which repositories have a caller?", and a repository
+# that LOST its caller would then drop quietly out of the audit -- the same
+# silent failure in a different place. An explicit list answers "which
+# repositories are supposed to be reviewed?", and removing one is a diff a
+# person has to approve.
+#
+# code-review-bot is absent on purpose: it reviews itself through
+# self-review.yml, which calls review.yml directly and has no code-review.yml.
+env:
+  ORG_REPOS: >-
+    MarketData-App/api
+  USER_REPOS: >-
+    MarketDataApp/sdk-py
+    MarketDataApp/sdk-go
+    MarketDataApp/sdk-js
+    MarketDataApp/sdk-java
+    MarketDataApp/sdk-csharp
+    MarketDataApp/sdk-php
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # TWO TOKENS, because the App is installed on two accounts and an
+      # installation token reaches only its own. `owner:` with no
+      # `repositories:` gives every repository in that installation.
+      - name: Token for the MarketData-App organisation
+        id: org
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.CODE_REVIEW_APP_ID }}
+          private-key: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
+          owner: MarketData-App
+
+      - name: Token for the MarketDataApp user account
+        id: user
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.CODE_REVIEW_APP_ID }}
+          private-key: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
+          owner: MarketDataApp
+
+      # One step per owner, because each needs ITS OWN token in the
+      # environment; an organisation installation token cannot read the user
+      # account's repositories.
+      #
+      # `if: always()` on the second, so a failure in the first does not hide
+      # the rest of the fleet. Reporting one broken repository while silently
+      # skipping five others is the failure this workflow exists to prevent.
+      - name: Audit the MarketData-App organisation
+        id: audit-org
+        run: uv run reviewbot audit-callers $ORG_REPOS
+        env:
+          GITHUB_TOKEN: ${{ steps.org.outputs.token }}
+
+      - name: Audit the MarketDataApp user account
+        id: audit-user
+        if: always()
+        run: uv run reviewbot audit-callers $USER_REPOS
+        env:
+          GITHUB_TOKEN: ${{ steps.user.outputs.token }}

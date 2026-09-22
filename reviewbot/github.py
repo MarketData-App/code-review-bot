@@ -274,6 +274,27 @@ class GitHub:
             f"?path={urllib.parse.quote(path)}&sha={urllib.parse.quote(branch)}&since={urllib.parse.quote(since.isoformat())}"
         )
 
+    def workflow_files(self) -> dict:
+        """Every file in `.github/workflows`, as {filename: text}.
+
+        Used by `audit-callers` to answer the question GitHub answers
+        silently: does the name in a caller's `workflow_run.workflows` match a
+        workflow that actually exists and actually runs on pull requests?
+        """
+        import base64
+
+        listing = self._request(
+            "GET", f"/repos/{self.repo}/contents/{urllib.parse.quote('.github/workflows')}"
+        ).data
+        out = {}
+        for item in listing if isinstance(listing, list) else []:
+            if item.get("type") != "file" or not item.get("name", "").endswith((".yml", ".yaml")):
+                continue
+            blob = self._request("GET", f"/repos/{self.repo}/git/blobs/{item['sha']}").data or {}
+            if blob.get("encoding") == "base64":
+                out[item["name"]] = base64.b64decode(blob["content"]).decode("utf-8", "replace")
+        return out
+
     def pull_for_sha(self, sha: str) -> int | None:
         """The open pull request whose head is `sha`, or None.
 

@@ -129,6 +129,27 @@ The middle row is the common one and reads as a fault in the footer when it is
 not: on a repository with `backends: [codex, claude]` and `mode: fallback`,
 every successful review reports `claude unavailable` because Codex answered.
 
+### Will a repository actually start a review?
+
+`on.workflow_run.workflows` in a caller lists workflow **`name:`** values, and
+GitHub matches them silently. A name matching no workflow never fires: no
+warning, no failed run, no log line. Reviews stop and the repository still
+looks green.
+
+```bash
+GITHUB_TOKEN=$(gh auth token) uv run reviewbot audit-callers MarketDataApp/sdk-py ...
+```
+
+It exits non-zero when any repository will not start a review, and says why:
+a missing or commented-out `workflow_run`, a name matching no workflow, a
+workflow that does not run on pull requests, or a repository it could not
+read. `.github/workflows/audit-callers.yml` runs it daily over the whole
+fleet.
+
+The target list there is explicit, not discovered. Discovery answers "which
+repositories have a caller?", so one that LOST its caller would drop quietly
+out of the audit -- the same silent failure in a different place.
+
 ## Setting it up
 
 The GitHub App is created by hand, once. `docs/setup.md` has the exact
