@@ -774,11 +774,15 @@ def audit_callers(repos: list, token: str) -> int:
     unreadable = {}
     for repo in repos:
         try:
-            files = _store_api(repo, token).workflow_files()
+            api = _store_api(repo, token)
+            files = api.workflow_files()
+            # Contents alone cannot see a workflow switched off in the Actions
+            # UI: the file stays put and nothing runs.
+            states = api.workflow_states()
         except Exception as exc:  # noqa: BLE001 - any failure to read is a failure
             unreadable[repo] = f"{type(exc).__name__}: {scrub(str(exc))}"
             continue
-        results[repo] = callers_mod.activation(files.get("code-review.yml"), files)
+        results[repo] = callers_mod.activation(files.get("code-review.yml"), files, states)
 
     print(f"Code review activation, {len(repos)} repositor{'y' if len(repos) == 1 else 'ies'}\n")
     if results:

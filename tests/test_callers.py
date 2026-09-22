@@ -201,6 +201,9 @@ class FakeApi:
     def workflow_files(self):
         return self._files.get(self.repo, {})
 
+    def workflow_states(self):
+        return {name: "active" for name in self._files.get(self.repo, {})}
+
 
 def _cli(monkeypatch, files):
     from reviewbot import cli
@@ -242,6 +245,9 @@ def test_a_repository_that_cannot_be_read_fails_the_audit(monkeypatch, capsys):
 
         def workflow_files(self):
             raise GitHubError("GET /contents failed with 404: Not Found")
+
+        def workflow_states(self):
+            return {}
 
     monkeypatch.setattr(cli, "_store_api", lambda repo, token: Boom())
     # Unreadable is not the same as healthy. An audit that shrugs at a 404
@@ -402,9 +408,12 @@ def test_a_branch_filter_that_excludes_feature_branches_is_reported():
 
 
 def test_a_catch_all_branch_filter_is_accepted():
-    for pattern in ('["**"]', '["*"]'):
-        got = callers.activation(_with_branches("branches", pattern), {"t.yml": TESTS_WORKFLOW})
-        assert got.ok is True, (pattern, got.reasons)
+    # `["*"]` was accepted here in the first version of this fix, which was
+    # wrong: GitHub's `*` does not cross `/`, so it skips every `feature/x`
+    # head. The case now lives in
+    # `test_a_single_star_branch_filter_is_rejected_because_it_skips_slashes`.
+    got = callers.activation(_with_branches("branches", '["**"]'), {"t.yml": TESTS_WORKFLOW})
+    assert got.ok is True, got.reasons
 
 
 def test_branches_ignore_is_reported_because_it_disables_some_branches():
@@ -425,3 +434,104 @@ def test_a_malformed_branch_filter_is_reported():
 def test_no_branch_filter_at_all_stays_healthy():
     got = callers.activation(ARMED, {"t.yml": TESTS_WORKFLOW})
     assert got.ok is True
+
+
+# --- round three (2ef2f9cc refined, 34cb249a) ------------------------------
+
+
+def test_a_single_star_branch_filter_is_rejected_because_it_skips_slashes():
+    # GitHub's branch globs: `*` matches anything EXCEPT `/`, `**` matches
+    # across `/` too. So `branches: ["*"]` silently skips every `feature/x`
+    # and `claude/y` head -- which is most of them here.
+    got = callers.activation(_with_branches("branches", '["*"]'), {"t.yml": TESTS_WORKFLOW})
+    assert got.ok is False
+
+
+def test_only_a_bare_double_star_branch_filter_is_accepted():
+    got = callers.activation(_with_branches("branches", '["**"]'), {"t.yml": TESTS_WORKFLOW})
+    assert got.ok is True, got.reasons
+
+
+def test_a_negation_beside_the_catch_all_is_rejected():
+    got = callers.activation(
+        _with_branches("branches", '["**", "!main"]'), {"t.yml": TESTS_WORKFLOW}
+    )
+    assert got.ok is False
+
+
+# A workflow can be switched off in the Actions UI. The file stays exactly
+# where it is, `state` becomes `disabled_manually`, and nothing ever runs.
+# Reading contents alone cannot see it.
+
+FILES = {"code-review.yml": ARMED, "t.yml": TESTS_WORKFLOW}
+ACTIVE = {"code-review.yml": "active", "t.yml": "active"}
+
+
+def test_active_workflows_pass():
+    got = callers.activation(ARMED, FILES, states=ACTIVE)
+    assert got.ok is True, got.reasons
+
+
+def test_a_disabled_caller_is_reported():
+    states = dict(ACTIVE, **{"code-review.yml": "disabled_manually"})
+    got = callers.activation(ARMED, FILES, states=states)
+    assert got.ok is False
+    assert any("code-review.yml" in r and "disabled" in r for r in got.reasons)
+
+
+def test_a_disabled_source_workflow_is_reported():
+    states = dict(ACTIVE, **{"t.yml": "disabled_manually"})
+    got = callers.activation(ARMED, FILES, states=states)
+    assert got.ok is False
+    assert any("Tests" in r and "disabled" in r for r in got.reasons)
+
+
+def test_a_workflow_disabled_for_inactivity_is_reported():
+    # GitHub switches scheduled workflows off after 60 days of repository
+    # inactivity, which is how a quiet SDK would lose its reviews.
+    states = dict(ACTIVE, **{"t.yml": "disabled_inactivity"})
+    got = callers.activation(ARMED, FILES, states=states)
+    assert got.ok is False
+
+
+def test_unknown_states_are_not_treated_as_disabled():
+    # `states=None` means we did not ask, not that everything is off.
+    assert callers.activation(ARMED, FILES, states=None).ok is True
+
+
+def test_workflow_states_reads_the_objects_the_actions_api_actually_returns():
+    # Regression: this used `_paged`, which extends a list with whatever it is
+    # handed. The Actions endpoint answers with an OBJECT, so `_paged` added
+    # its KEYS and every repository failed with
+    # "'str' object has no attribute 'get'". The stubs in this file could not
+    # catch that; only a real response shape can.
+    from reviewbot.github import GitHub
+    from tests.conftest import FakeTransport
+
+    transport = FakeTransport()
+    transport.add(
+        "GET",
+        "/repos/o/r/actions/workflows?per_page=100",
+        data={
+            "total_count": 2,
+            "workflows": [
+                {"name": "Tests", "path": ".github/workflows/ci.yml", "state": "active"},
+                {
+                    "name": "Code review",
+                    "path": ".github/workflows/code-review.yml",
+                    "state": "disabled_manually",
+                },
+            ],
+        },
+    )
+    got = GitHub("o/r", "t", transport=transport).workflow_states()
+    assert got == {"ci.yml": "active", "code-review.yml": "disabled_manually"}
+
+
+def test_workflow_states_survives_an_unexpected_body():
+    from reviewbot.github import GitHub
+    from tests.conftest import FakeTransport
+
+    transport = FakeTransport()
+    transport.add("GET", "/repos/o/r/actions/workflows?per_page=100", data=["not", "an", "object"])
+    assert GitHub("o/r", "t", transport=transport).workflow_states() == {}

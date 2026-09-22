@@ -295,6 +295,33 @@ class GitHub:
                 out[item["name"]] = base64.b64decode(blob["content"]).decode("utf-8", "replace")
         return out
 
+    def workflow_states(self) -> dict:
+        """{filename: state} from the Actions API: `active`, `disabled_*`.
+
+        A workflow switched off in the Actions UI keeps its file exactly where
+        it was and runs nothing, so `workflow_files` alone cannot see it.
+        GitHub also disables SCHEDULED workflows after 60 days of repository
+        inactivity, which is how a quiet repository would lose its reviews
+        without anybody touching a file.
+        """
+        # NOT `_paged`: this endpoint answers with an OBJECT,
+        # `{total_count, workflows: [...]}`, and `_paged` extends a list with
+        # whatever it is given -- so a dict contributed its KEYS as strings and
+        # every repository reported `'str' object has no attribute 'get'`. The
+        # stubbed unit tests could not see it; the live fleet could.
+        reply = (
+            self._request("GET", f"/repos/{self.repo}/actions/workflows?per_page=100").data or {}
+        )
+        found = reply.get("workflows") if isinstance(reply, dict) else None
+        out = {}
+        for item in found if isinstance(found, list) else []:
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path") or ""
+            if path.startswith(".github/workflows/"):
+                out[path.rsplit("/", 1)[-1]] = item.get("state") or ""
+        return out
+
     def pull_for_sha(self, sha: str) -> int | None:
         """The open pull request whose head is `sha`, or None.
 

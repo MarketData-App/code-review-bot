@@ -63,15 +63,19 @@ def runs_on_pull_request(on) -> bool:
     return False
 
 
-def _pull_request_workflow_names(files: dict) -> set[str]:
-    """The `name:` of every workflow in the repository that runs on a pull request.
+def _pull_request_workflows(files: dict) -> dict:
+    """{workflow name: filename} for every workflow that runs on a pull request.
+
+    The filename comes back too, because a workflow can be switched off in the
+    Actions UI while its file stays exactly where it is -- and `state` is keyed
+    by file, not by name.
 
     A file that will not parse is SKIPPED rather than fatal: one broken
     workflow elsewhere in `.github/workflows` must not make a healthy caller
     report as broken.
     """
-    names = set()
-    for text in (files or {}).values():
+    found = {}
+    for filename, text in (files or {}).items():
         try:
             spec = yaml.safe_load(text or "")
         except yaml.YAMLError:
@@ -80,8 +84,8 @@ def _pull_request_workflow_names(files: dict) -> set[str]:
             continue
         on = spec.get(True, spec.get("on"))
         if runs_on_pull_request(on) and isinstance(spec.get("name"), str):
-            names.add(spec["name"])
-    return names
+            found.setdefault(spec["name"], filename)
+    return found
 
 
 def _as_names(value) -> list[str] | None:
@@ -101,11 +105,19 @@ def _as_names(value) -> list[str] | None:
     return None
 
 
-def activation(caller_text: str | None, workflow_files: dict) -> Activation:
+def activation(
+    caller_text: str | None, workflow_files: dict, states: dict | None = None
+) -> Activation:
     """Will this caller start a review when a pull request's CI finishes?
 
     `workflow_files` maps filename to text for everything in the target's
     `.github/workflows`, the caller included.
+
+    `states` maps filename to the Actions state GitHub reports (`active`,
+    `disabled_manually`, `disabled_inactivity`). A disabled workflow keeps its
+    file and runs nothing, so contents alone cannot answer this. `None` means
+    we did not ask -- which is not the same as everything being off, so it is
+    treated as no opinion.
     """
     if caller_text is None:
         return Activation(False, [], ["no code-review.yml in .github/workflows"])
@@ -163,10 +175,15 @@ def activation(caller_text: str | None, workflow_files: dict) -> Activation:
         patterns = _as_names(run_on[key])
         if patterns is None:
             reasons.append(f"workflow_run.{key} is {run_on[key]!r}; it must be a list of patterns")
-        elif key == "branches" and not any(p in ("*", "**") for p in patterns):
+        elif key == "branches" and patterns != ["**"]:
+            # ONLY a bare `**`. GitHub's branch globs give `*` no authority
+            # over `/`, so `branches: ["*"]` silently skips every `feature/x`
+            # head -- and a negation such as `["**", "!main"]` excludes again
+            # after the catch-all. Anything but the one provably total filter
+            # is reported.
             reasons.append(
                 f"workflow_run.branches is {patterns!r}; a pull request's head branch is "
-                f"arbitrary, so a review only starts for branches matching that list"
+                f"arbitrary, and only ['**'] matches every branch (`*` does not cross `/`)"
             )
         elif key == "branches-ignore":
             reasons.append(
@@ -174,16 +191,27 @@ def activation(caller_text: str | None, workflow_files: dict) -> Activation:
                 f"those branches starts no review"
             )
 
-    available = _pull_request_workflow_names(workflow_files)
+    # A DISABLED CALLER runs nothing while looking perfectly correct on disk.
+    caller_state = (states or {}).get("code-review.yml")
+    if caller_state and caller_state != "active":
+        reasons.append(f"code-review.yml is {caller_state} in Actions; it will not run")
+
+    available = _pull_request_workflows(workflow_files)
     matched = []
     for name in wanted:
-        if name in available:
-            matched.append(name)
-        else:
+        if name not in available:
             reasons.append(
                 f"{name!r} matches no workflow that runs on a pull request "
                 f"(available: {', '.join(sorted(available)) or 'none'})"
             )
+            continue
+        state = (states or {}).get(available[name])
+        if state and state != "active":
+            reasons.append(
+                f"{name!r} ({available[name]}) is {state} in Actions; it fires no workflow_run"
+            )
+            continue
+        matched.append(name)
 
     if not matched:
         reasons.append("nothing will ever trigger a review")
