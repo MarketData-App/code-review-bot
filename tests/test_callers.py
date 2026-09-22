@@ -323,3 +323,58 @@ def test_the_second_audit_runs_even_when_the_first_fails(audit_workflow):
     steps = audit_workflow["jobs"]["audit"]["steps"]
     audits = [s for s in steps if s.get("run", "").strip().startswith("uv run reviewbot audit")]
     assert audits[1].get("if") == "always()"
+
+
+# --- fixes from the bot's review of PR #21 ---------------------------------
+
+
+def test_the_audit_never_runs_on_a_pull_request(audit_workflow):
+    # c12ba7a7, and it was a real hole rather than a theoretical one. The job
+    # mints installation tokens covering EVERY repository of each owner and
+    # then runs `uv run reviewbot ...` from the checkout. With a
+    # `pull_request` trigger that checkout is the PULL REQUEST'S OWN CODE, so
+    # any author could edit cli.py and read the token out of the environment.
+    # review.yml refuses to let a pull request near a credential for exactly
+    # this reason; this workflow must hold the same line.
+    on = audit_workflow.get(True) or audit_workflow.get("on")
+    assert "pull_request" not in on
+    assert "pull_request_target" not in on
+    assert set(on) <= {"schedule", "workflow_dispatch"}
+
+
+def test_omitted_types_is_accepted():
+    # 2c4f6f10. GitHub runs a workflow_run for every activity type when
+    # `types` is absent, `completed` included. Rejecting that called a working
+    # caller broken -- the audit's own false positive.
+    caller = ARMED.replace("    types: [completed]\n", "")
+    got = callers.activation(caller, workflows(**{"test.yml": TESTS_WORKFLOW}))
+    assert got.ok is True, got.reasons
+
+
+def test_an_explicit_types_list_without_completed_is_still_rejected():
+    caller = ARMED.replace("types: [completed]", "types: [requested]")
+    got = callers.activation(caller, workflows(**{"test.yml": TESTS_WORKFLOW}))
+    assert got.ok is False
+    assert any("completed" in r for r in got.reasons)
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "    workflows:\n      Tests: null\n    types: [completed]",  # a map, not a list
+        "    workflows: Tests\n    types:\n      completed: null",  # types as a map
+    ],
+)
+def test_a_malformed_trigger_is_rejected_rather_than_passing_on_key_membership(block):
+    # c5b6e436. `"completed" in {"completed": None}` is True and iterating a
+    # mapping yields its keys, so a schema-invalid caller GitHub will not run
+    # was reported healthy.
+    caller = ARMED.replace('    workflows: ["Tests"]\n    types: [completed]', block)
+    got = callers.activation(caller, workflows(**{"test.yml": TESTS_WORKFLOW}))
+    assert got.ok is False
+
+
+def test_a_non_string_workflow_name_is_rejected():
+    caller = ARMED.replace('workflows: ["Tests"]', "workflows: [123]")
+    got = callers.activation(caller, workflows(**{"test.yml": TESTS_WORKFLOW}))
+    assert got.ok is False

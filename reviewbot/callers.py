@@ -84,6 +84,23 @@ def _pull_request_workflow_names(files: dict) -> set[str]:
     return names
 
 
+def _as_names(value) -> list[str] | None:
+    """`value` as a list of strings, or None when it is not one.
+
+    YAML accepts a bare scalar where GitHub documents a list, so a string is
+    read as a one-element list. Anything else -- a mapping above all -- is
+    rejected rather than coerced: membership and iteration both succeed on a
+    dict and silently answer about its KEYS.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    return None
+
+
 def activation(caller_text: str | None, workflow_files: dict) -> Activation:
     """Will this caller start a review when a pull request's CI finishes?
 
@@ -105,14 +122,33 @@ def activation(caller_text: str | None, workflow_files: dict) -> Activation:
         return Activation(False, [], ["no workflow_run trigger; a push starts no review"])
 
     reasons: list[str] = []
-    types = run_on.get("types") or []
-    if "completed" not in types:
-        # The review gate refuses a commit whose checks are still running, so
-        # anything but `completed` reviews a pull request that is not ready.
-        reasons.append(f"workflow_run.types is {types!r}; it must include 'completed'")
 
-    wanted = run_on.get("workflows") or []
-    if not wanted:
+    # ABSENT `types` IS FINE. GitHub fires a workflow_run for every activity
+    # type when `types` is omitted, `completed` among them. Treating a missing
+    # key as an empty list called a working caller broken -- a false positive
+    # in the very thing meant to catch false negatives.
+    types = run_on.get("types")
+    if types is not None:
+        listed = _as_names(types)
+        if listed is None:
+            reasons.append(f"workflow_run.types is {types!r}; it must be a list of strings")
+        elif "completed" not in listed:
+            # The review gate refuses a commit whose checks are still running,
+            # so anything but `completed` reviews a pull request that is not
+            # ready.
+            reasons.append(f"workflow_run.types is {types!r}; it must include 'completed'")
+
+    # `_as_names` rather than truthiness: `"completed" in {"completed": None}`
+    # is True and iterating a mapping yields its keys, so a schema-invalid
+    # caller that GitHub will not run was being reported healthy.
+    wanted = _as_names(run_on.get("workflows"))
+    if wanted is None:
+        reasons.append(
+            f"workflow_run.workflows is {run_on.get('workflows')!r}; "
+            f"it must be a list of workflow names"
+        )
+        wanted = []
+    elif not wanted:
         reasons.append("workflow_run.workflows is empty; it matches nothing")
 
     available = _pull_request_workflow_names(workflow_files)

@@ -23,13 +23,19 @@ on:
     # 07:00 UTC daily, before the working day in every timezone the team uses.
     - cron: "0 7 * * *"
   workflow_dispatch:
-  # Also on a change to the bot's own workflow templates or to the auditor, so
-  # a caller template edited here is checked against reality before it ships.
-  pull_request:
-    paths:
-      - ".github/workflows/audit-callers.yml"
-      - "reviewbot/callers.py"
-      - "reviewbot/cli.py"
+
+# NO `pull_request` TRIGGER, AND THIS IS LOAD-BEARING.
+#
+# The job mints installation tokens covering every repository of each owner
+# and then runs `uv run reviewbot ...` from the checkout. On a `pull_request`
+# trigger that checkout is the PULL REQUEST'S OWN CODE, so any author could
+# edit cli.py and read the token straight out of the environment -- a
+# privilege escalation to every repository the App is installed on.
+#
+# An earlier version of this file had exactly that, to check a caller template
+# against reality before it shipped. review.yml refuses to let a pull request
+# near a credential, and this workflow holds the same line: schedule and
+# manual dispatch only, both of which run trusted default-branch code.
 
 # THE TARGET LIST IS EXPLICIT, not discovered from the App installation.
 #
