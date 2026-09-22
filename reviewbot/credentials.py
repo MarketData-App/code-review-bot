@@ -285,7 +285,7 @@ def lease_spans(commits: list[dict]) -> list[LeaseSpan]:
     is skipped for the same reason `_held` treats an unparseable lease as free
     -- this must not be the thing that breaks.
     """
-    open_spans: dict[tuple, datetime.datetime] = {}
+    open_spans: dict[tuple, tuple[str, datetime.datetime]] = {}
     out: list[LeaseSpan] = []
     for entry in reversed(commits or []):
         body = (entry.get("commit") or {}).get("message") or ""
@@ -293,16 +293,20 @@ def lease_spans(commits: list[dict]) -> list[LeaseSpan]:
         if not match:
             continue
         verb, token = match.group(1), match.group(2)
-        # One key for one hold, whichever format wrote it, so a `taken` and its
-        # `freed` pair on identity rather than on spelling.
+        # One key and one holder for one hold, whichever format wrote it, so a
+        # `taken` pairs with its `freed` on identity rather than on spelling
+        # and `LeaseSpan.holder` reads the same either way.
         if "#" in token:
             repo, pr, run = _parse_holder(token)
-            key = (repo, pr, run)
+            holder = token
         else:
             repo, run = token, match.group(4) or ""
             raw_pr = match.group(3)
             pr = int(raw_pr) if raw_pr and raw_pr.isdigit() else None
-            key = (repo, pr, run)
+            # Rebuilt, never padded: a hold with no pull request is
+            # `verification`, not `verification#None#`.
+            holder = "#".join([repo, *([raw_pr] if raw_pr else []), *([run] if run else [])])
+        key = (repo, pr, run)
         stamp = ((entry.get("commit") or {}).get("committer") or {}).get("date")
         try:
             when = datetime.datetime.fromisoformat((stamp or "").replace("Z", "+00:00"))
@@ -311,14 +315,14 @@ def lease_spans(commits: list[dict]) -> list[LeaseSpan]:
         if when.tzinfo is None:
             when = when.replace(tzinfo=datetime.UTC)
         if verb == "taken":
-            open_spans[key] = when
+            open_spans[key] = (holder, when)
             continue
-        start = open_spans.pop(key, None)
-        if start is None:
+        found = open_spans.pop(key, None)
+        if found is None:
             continue
-        out.append(LeaseSpan(token, repo, pr, run, start, when))
-    for (repo, pr, run), start in open_spans.items():
-        out.append(LeaseSpan(f"{repo}#{pr}#{run}", repo, pr, run, start, None))
+        out.append(LeaseSpan(found[0], repo, pr, run, start=found[1], end=when))
+    for (repo, pr, run), (holder, start) in open_spans.items():
+        out.append(LeaseSpan(holder, repo, pr, run, start, None))
     out.sort(key=lambda s: s.start)
     return out
 

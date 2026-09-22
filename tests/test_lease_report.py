@@ -471,3 +471,50 @@ def test_the_message_a_lease_write_produces_is_the_message_the_report_reads():
     assert spans[0].pr == 463
     assert spans[0].run == "35743856939-1"
     assert spans[0].seconds == 600
+
+
+def test_the_holder_is_the_same_string_whichever_format_wrote_it():
+    # Found by the bot's review of PR #20 (a1f9e042). `holder` took the bare
+    # repository token on a new-format span and a fabricated
+    # `verification#None#` on an open one, so its meaning depended on the
+    # message's spelling and on whether the hold had been freed.
+    old = credentials.lease_spans(
+        [
+            freed("MarketData-App/api#463#35743856939-1", "2026-09-22T10:10:00Z"),
+            taken("MarketData-App/api#463#35743856939-1", "2026-09-22T10:00:00Z"),
+        ]
+    )
+    new = credentials.lease_spans(
+        [
+            new_freed("MarketData-App/api", 463, "35743856939-1", "2026-09-22T10:10:00Z"),
+            new_taken("MarketData-App/api", 463, "35743856939-1", "2026-09-22T10:00:00Z"),
+        ]
+    )
+    assert old[0].holder == new[0].holder == "MarketData-App/api#463#35743856939-1"
+
+
+def test_an_open_span_carries_the_same_holder_a_closed_one_would():
+    open_only = credentials.lease_spans(
+        [new_taken("MarketData-App/api", 463, "35743856939-1", "2026-09-22T10:00:00Z")]
+    )
+    assert open_only[0].holder == "MarketData-App/api#463#35743856939-1"
+
+
+def test_a_holder_with_no_pull_request_is_not_padded_with_none():
+    spans = credentials.lease_spans([commit("lease taken by verification", "2026-09-22T10:00:00Z")])
+    assert spans[0].holder == "verification"
+
+
+def test_the_holder_round_trips_through_the_message_the_writer_produces():
+    for holder in (
+        "MarketData-App/api#463#35743856939-1",
+        "MarketDataApp/sdk-py#144#35744629707-2",
+        "verification",
+    ):
+        spans = credentials.lease_spans(
+            [
+                commit(credentials.lease_message("freed", holder), "2026-09-22T10:10:00Z"),
+                commit(credentials.lease_message("taken", holder), "2026-09-22T10:00:00Z"),
+            ]
+        )
+        assert spans[0].holder == holder
