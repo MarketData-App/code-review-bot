@@ -104,7 +104,13 @@ jobs:
           # Scoped, not owner-wide. `owner:` alone mints a token for every
           # repository in the installation; the audit needs only what it
           # audits, and a test asserts this list matches ORG_REPOS.
-          repositories: api
+          #
+          # code-review-bot is here as well as `api` because BOTH audits
+          # resolve each caller's pinned ref against this repository's
+          # .github/workflows/review.yml.
+          repositories: >-
+            api
+            code-review-bot
 
       - name: Token for the MarketDataApp user account
         id: user
@@ -140,3 +146,10 @@ jobs:
         run: uv run reviewbot audit-callers $USER_REPOS
         env:
           GITHUB_TOKEN: ${{ steps.user.outputs.token }}
+          # THE BOT REPOSITORY NEEDS THE ORG TOKEN. An installation token
+          # reaches only its own account, so the user-account token above
+          # cannot read MarketData-App/code-review-bot -- and the audit
+          # resolves each caller's pinned ref against it. Without this the ref
+          # check failed for all six SDK repositories and the audit still
+          # reported green.
+          REVIEWBOT_BOT_TOKEN: ${{ steps.org.outputs.token }}

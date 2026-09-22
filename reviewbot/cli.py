@@ -770,16 +770,24 @@ def audit_callers(repos: list, token: str) -> int:
     """
     from reviewbot import callers as callers_mod
 
-    # Resolve the bot's own refs ONCE. A caller pinned at a typoed ref is a
-    # 404 at run time and would otherwise get a healthy verdict. None means we
-    # could not look, which `activation` treats as "not checked" rather than
-    # "broken".
-    known_refs = None
-    try:
-        bot = _store_api(callers_mod.REVIEW_WORKFLOW.split("/.github/")[0], token)
-        known_refs = bot.ref_names()
-    except Exception as exc:  # noqa: BLE001 - a probe, never fatal
-        print(f"reviewbot: could not list the bot's refs ({scrub(str(exc))}); not checking them)")
+    REVIEW_WORKFLOW_PATH = ".github/workflows/review.yml"
+
+    # THE BOT REPOSITORY NEEDS ITS OWN CREDENTIAL. An installation token
+    # reaches only its own account, so the user-account audit cannot read the
+    # organisation-owned bot repository with the token it audits SDKs with.
+    # That failure used to be swallowed into "refs not checked", silently
+    # disabling the check for all six SDK repositories while still reporting
+    # green -- precisely the failure this command exists to catch.
+    bot_repo = callers_mod.REVIEW_WORKFLOW.split("/.github/")[0]
+    bot_token = os.environ.get("REVIEWBOT_BOT_TOKEN") or token
+    bot_api = _store_api(bot_repo, bot_token)
+    resolved: dict = {}
+
+    def ref_resolver(ref: str) -> bool:
+        """Is the reusable workflow present at this ref? Cached per ref."""
+        if ref not in resolved:
+            resolved[ref] = bool(bot_api.file_at_ref(REVIEW_WORKFLOW_PATH, ref))
+        return resolved[ref]
 
     results = {}
     unreadable = {}
@@ -793,9 +801,16 @@ def audit_callers(repos: list, token: str) -> int:
         except Exception as exc:  # noqa: BLE001 - any failure to read is a failure
             unreadable[repo] = f"{type(exc).__name__}: {scrub(str(exc))}"
             continue
-        results[repo] = callers_mod.activation(
-            files.get("code-review.yml"), files, states, known_refs
-        )
+        try:
+            results[repo] = callers_mod.activation(
+                files.get("code-review.yml"), files, states, ref_resolver
+            )
+        except Exception as exc:  # noqa: BLE001 - unresolvable refs are a failure
+            unreadable[repo] = (
+                f"could not resolve the bot's refs ({type(exc).__name__}: "
+                f"{scrub(str(exc))}); set REVIEWBOT_BOT_TOKEN to a token that can "
+                f"read {bot_repo}"
+            )
 
     print(f"Code review activation, {len(repos)} repositor{'y' if len(repos) == 1 else 'ies'}\n")
     if results:

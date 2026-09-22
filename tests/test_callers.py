@@ -204,6 +204,10 @@ class FakeApi:
     def workflow_states(self):
         return {name: "active" for name in self._files.get(self.repo, {})}
 
+    def file_at_ref(self, path, ref):
+        # The bot repository is not in `files`; the ref probe resolves anyway.
+        return "name: Review\non:\n  workflow_call:\n"
+
 
 def _cli(monkeypatch, files):
     from reviewbot import cli
@@ -248,6 +252,9 @@ def test_a_repository_that_cannot_be_read_fails_the_audit(monkeypatch, capsys):
 
         def workflow_states(self):
             return {}
+
+        def file_at_ref(self, path, ref):
+            return "name: Review\non:\n  workflow_call:\n"
 
     monkeypatch.setattr(cli, "_store_api", lambda repo, token: Boom())
     # Unreadable is not the same as healthy. An audit that shrugs at a 404
@@ -573,7 +580,22 @@ def test_the_tokens_are_scoped_to_the_audited_repositories(audit_workflow):
     env = audit_workflow["env"]
     for owner, key in (("MarketData-App", "ORG_REPOS"), ("MarketDataApp", "USER_REPOS")):
         wanted = {r.split("/", 1)[1] for r in env[key].split()}
+        if owner == "MarketData-App":
+            # Both audits resolve each caller's pinned ref against the bot's
+            # own review.yml, so the org token must reach it too.
+            wanted.add("code-review-bot")
         assert scoped[owner] == wanted, f"{owner} token scope does not match {key}"
+
+
+def test_the_user_audit_gets_an_org_token_for_the_bot_repository(audit_workflow):
+    # 352adc93. Without this the ref check failed for every SDK repository and
+    # the audit still reported green.
+    steps = audit_workflow["jobs"]["audit"]["steps"]
+    user_step = [s for s in steps if s.get("id") == "audit-user"][0]
+    org_step = [s for s in steps if s.get("id") == "audit-org"][0]
+    assert "REVIEWBOT_BOT_TOKEN" in user_step["env"]
+    assert user_step["env"]["REVIEWBOT_BOT_TOKEN"] != user_step["env"]["GITHUB_TOKEN"]
+    assert user_step["env"]["REVIEWBOT_BOT_TOKEN"] == org_step["env"]["GITHUB_TOKEN"]
 
 
 def test_a_caller_with_no_job_calling_the_review_workflow_is_reported():
@@ -763,17 +785,84 @@ def test_a_local_review_workflow_exposing_workflow_call_is_accepted():
     assert got.ok is True, got.reasons
 
 
-def test_a_cross_repository_ref_that_does_not_resolve_is_rejected():
-    # A typoed ref is a 404 at run time and a healthy verdict here.
-    caller = ARMED.replace("review.yml@main", "review.yml@mian")
-    got = callers.activation(ARMED, {"t.yml": TESTS_WORKFLOW}, known_refs={"main", "v1"})
-    assert got.ok is True, got.reasons
-    bad = callers.activation(caller, {"t.yml": TESTS_WORKFLOW}, known_refs={"main", "v1"})
-    assert bad.ok is False
-    assert any("mian" in r for r in bad.reasons)
-
-
 def test_refs_are_not_checked_when_they_were_not_resolved():
-    # `known_refs=None` means we did not look, which is not "it is broken".
+    # `ref_resolver=None` means we did not look, which is not "it is broken".
     caller = ARMED.replace("review.yml@main", "review.yml@whatever")
     assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is True
+
+
+# --- round eight -----------------------------------------------------------
+
+
+def test_a_ref_is_accepted_only_when_the_workflow_exists_at_it():
+    # 32046223. A branch existing does not mean review.yml exists on it, and
+    # an immutable SHA pin is valid but appears in no branch or tag list. The
+    # resolver answers "is the file there at this ref?", which covers both.
+    seen = []
+
+    def resolver(ref):
+        seen.append(ref)
+        return ref in ("main", "deadbee")
+
+    assert callers.activation(ARMED, {"t.yml": TESTS_WORKFLOW}, ref_resolver=resolver).ok is True
+    sha = ARMED.replace("review.yml@main", "review.yml@deadbee")
+    assert callers.activation(sha, {"t.yml": TESTS_WORKFLOW}, ref_resolver=resolver).ok is True
+    old = ARMED.replace("review.yml@main", "review.yml@v0")
+    got = callers.activation(old, {"t.yml": TESTS_WORKFLOW}, ref_resolver=resolver)
+    assert got.ok is False
+    assert any("v0" in r for r in got.reasons)
+    assert "main" in seen and "deadbee" in seen and "v0" in seen
+
+
+def test_the_audit_fails_when_the_bots_refs_cannot_be_resolved(monkeypatch, capsys):
+    # 352adc93, and a bug of exactly the kind this tool exists to catch. The
+    # user-account audit resolved refs against the ORG-owned bot repository
+    # using the USER installation token, which cannot read it. The failure was
+    # caught and turned into "not checked", silently disabling ref validation
+    # for all six SDK repositories while the audit still reported green.
+    from reviewbot import cli
+    from reviewbot.github import GitHubError
+
+    class Api:
+        def __init__(self, repo):
+            self.repo = repo
+
+        def workflow_files(self):
+            return {"code-review.yml": ARMED, "t.yml": TESTS_WORKFLOW}
+
+        def workflow_states(self):
+            return {"code-review.yml": "active", "t.yml": "active"}
+
+        def file_at_ref(self, path, ref):
+            raise GitHubError("GET /contents failed with 404: Not Found")
+
+    monkeypatch.setattr(cli, "_store_api", lambda repo, token: Api(repo))
+    assert cli.audit_callers(["o/a"], token="t") == 1
+    assert "ref" in capsys.readouterr().out.lower()
+
+
+def test_the_bot_repository_can_be_read_with_its_own_token(monkeypatch):
+    # The fix: a separate credential for the bot repository, so the user-account
+    # audit resolves refs with something that can actually read it.
+    from reviewbot import cli
+
+    used = {}
+
+    class Api:
+        def __init__(self, repo, token):
+            self.repo, self.token = repo, token
+
+        def workflow_files(self):
+            return {"code-review.yml": ARMED, "t.yml": TESTS_WORKFLOW}
+
+        def workflow_states(self):
+            return {"code-review.yml": "active", "t.yml": "active"}
+
+        def file_at_ref(self, path, ref):
+            used["token"] = self.token
+            return "name: Review\non:\n  workflow_call:\n"
+
+    monkeypatch.setattr(cli, "_store_api", lambda repo, token: Api(repo, token))
+    monkeypatch.setenv("REVIEWBOT_BOT_TOKEN", "org-token")
+    assert cli.audit_callers(["o/a"], token="user-token") == 0
+    assert used["token"] == "org-token"

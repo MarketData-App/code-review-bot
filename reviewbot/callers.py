@@ -115,7 +115,7 @@ def _as_names(value) -> list[str] | None:
 
 
 def _calls_the_review_workflow(
-    caller: dict, workflow_files: dict, known_refs: set | None = None
+    caller: dict, workflow_files: dict, ref_resolver=None
 ) -> tuple[bool, str]:
     """Does any job in this caller invoke THIS bot's reusable workflow?
 
@@ -142,10 +142,14 @@ def _calls_the_review_workflow(
             target, _, ref = uses.partition("@")
             if target != REVIEW_WORKFLOW or not ref:
                 continue
-            # A ref that does not resolve is a 404 at run time. `known_refs`
-            # is None when nobody looked, which is not the same as broken.
-            if known_refs is not None and ref not in known_refs:
-                problems.append(f"{uses} names ref {ref!r}, which does not resolve in the bot")
+            # A ref whose review.yml is missing is a 404 at run time. Asking
+            # "is the FILE there at this ref?" rather than "is this a known
+            # branch?" also accepts an immutable commit-SHA pin, which appears
+            # in no branch or tag listing. `None` means nobody looked.
+            if ref_resolver is not None and not ref_resolver(ref):
+                problems.append(
+                    f"{uses} names ref {ref!r}, where the review workflow cannot be found"
+                )
                 continue
             return True, ""
         if uses != LOCAL_REVIEW_WORKFLOW:
@@ -171,7 +175,7 @@ def activation(
     caller_text: str | None,
     workflow_files: dict,
     states: dict | None = None,
-    known_refs: set | None = None,
+    ref_resolver=None,
 ) -> Activation:
     """Will this caller start a review when a pull request's CI finishes?
 
@@ -194,7 +198,7 @@ def activation(
     # A PERFECT TRIGGER THAT STARTS NOTHING. The caller must actually call the
     # reusable workflow; without this a file with the right `on:` and an
     # unrelated job reported healthy.
-    calls, why = _calls_the_review_workflow(caller, workflow_files, known_refs)
+    calls, why = _calls_the_review_workflow(caller, workflow_files, ref_resolver)
     if not calls:
         return Activation(
             False,

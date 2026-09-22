@@ -143,8 +143,16 @@ GITHUB_TOKEN=$(gh auth token) uv run reviewbot audit-callers MarketDataApp/sdk-p
 It exits non-zero when any repository will not start a review, and says why:
 a missing or commented-out `workflow_run`, a name matching no workflow, a
 workflow that does not run on pull requests, or a repository it could not
-read. `.github/workflows/audit-callers.yml` runs it daily over the whole
-fleet.
+read. `.github/workflows/audit-callers.yml` runs it over the whole fleet on a
+daily schedule and on every push to `main`.
+
+**One monitoring gap, accepted deliberately.** GitHub disables a scheduled
+workflow after 60 days with no activity in its repository, and a workflow
+already disabled that way does not process a later push -- so the push trigger
+narrows the window rather than closing it. Closing it properly needs a
+scheduler outside this repository. The gap opens only when this repository has
+been dormant for 60 days, during which a target repository could still drift
+unnoticed.
 
 The target list there is explicit, not discovered. Discovery answers "which
 repositories have a caller?", so one that LOST its caller would drop quietly
