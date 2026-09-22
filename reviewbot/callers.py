@@ -131,10 +131,15 @@ def _calls_the_review_workflow(caller: dict, workflow_files: dict) -> bool:
         uses = job.get("uses") if isinstance(job, dict) else None
         if not isinstance(uses, str):
             continue
-        target = uses.split("@", 1)[0]
-        if target == REVIEW_WORKFLOW:
-            return True
-        if target == LOCAL_REVIEW_WORKFLOW and "review.yml" in (workflow_files or {}):
+        # The two forms have DIFFERENT syntax, and each is only valid in its
+        # own shape: a cross-repository call requires a non-empty `@ref`, and
+        # a local call must carry none at all. Splitting on `@` and looking
+        # only at the path accepted both illegal spellings.
+        if "@" in uses:
+            target, _, ref = uses.partition("@")
+            if target == REVIEW_WORKFLOW and ref:
+                return True
+        elif uses == LOCAL_REVIEW_WORKFLOW and "review.yml" in (workflow_files or {}):
             return True
     return False
 

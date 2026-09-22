@@ -22,6 +22,21 @@ on:
   schedule:
     # 07:00 UTC daily, before the working day in every timezone the team uses.
     - cron: "0 7 * * *"
+  # AND ON EVERY MERGE, because GitHub disables a SCHEDULED workflow after 60
+  # days of repository inactivity -- which would switch this audit off in
+  # exactly the silence it exists to detect.
+  #
+  # A push to the default branch runs default-branch code, so it carries none
+  # of the ref-selection risk that removed `pull_request` and
+  # `workflow_dispatch` from this file.
+  #
+  # This does not fully solve the inactive-repository case and is not claimed
+  # to: if nothing is pushed here for 60 days the schedule stops and no push
+  # replaces it. It does mean the audit cannot be quietly off while anyone is
+  # working, and it reports fleet drift at merge time rather than the next
+  # morning.
+  push:
+    branches: [main]
 
 # SCHEDULE ONLY, AND THAT IS LOAD-BEARING.
 #

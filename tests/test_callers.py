@@ -345,7 +345,6 @@ def test_the_audit_never_runs_on_a_pull_request(audit_workflow):
     on = audit_workflow.get(True) or audit_workflow.get("on")
     assert "pull_request" not in on
     assert "pull_request_target" not in on
-    assert set(on) <= {"schedule", "workflow_dispatch"}
 
 
 def test_omitted_types_is_accepted():
@@ -542,15 +541,21 @@ def test_workflow_states_survives_an_unexpected_body():
 # --- round four ------------------------------------------------------------
 
 
-def test_the_audit_runs_only_on_a_schedule(audit_workflow):
-    # 323fa556. `workflow_dispatch` lets a writer choose a REF, and both the
-    # workflow file and the checkout then come from that ref -- so a branch
-    # could edit cli.py and read owner-wide tokens out of the environment.
-    # Three accounts besides the owner have push here and main is unprotected,
-    # so this is an escalation, not a theoretical one. A scheduled run always
-    # uses the default branch.
+def test_no_trigger_lets_the_caller_choose_the_ref(audit_workflow):
+    # 323fa556, and the property that actually matters. `workflow_dispatch`
+    # and `pull_request` both let someone choose a REF, and the workflow file
+    # AND the checkout then come from it -- so a branch could edit cli.py and
+    # read the tokens out of the environment. Three accounts besides the owner
+    # have push here and main is unprotected, so that is an escalation rather
+    # than a theoretical one.
+    #
+    # `schedule` and `push: [main]` both run DEFAULT-BRANCH code and carry no
+    # such choice, which is why the assertion is about ref selection and not
+    # about a single allowed trigger.
     on = audit_workflow.get(True) or audit_workflow.get("on")
-    assert set(on) == {"schedule"}
+    assert set(on) <= {"schedule", "push"}
+    assert "workflow_dispatch" not in on
+    assert on.get("push", {}).get("branches") == ["main"]
 
 
 def test_the_tokens_are_scoped_to_the_audited_repositories(audit_workflow):
@@ -696,3 +701,38 @@ def test_a_name_shared_by_two_disabled_workflows_still_fails():
         "new.yml": "disabled_inactivity",
     }
     assert callers.activation(ARMED, files, states=states).ok is False
+
+
+# --- round six -------------------------------------------------------------
+
+
+def test_a_cross_repository_call_without_a_ref_is_rejected():
+    # 22003edc. `uses: owner/repo/.github/workflows/x.yml` with no `@ref` is
+    # not valid reusable-workflow syntax; GitHub will not run it.
+    caller = ARMED.replace("review.yml@main", "review.yml")
+    assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is False
+
+
+def test_a_cross_repository_call_with_an_empty_ref_is_rejected():
+    caller = ARMED.replace("review.yml@main", "review.yml@")
+    assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is False
+
+
+def test_a_local_call_carrying_a_ref_is_rejected():
+    caller = ARMED.replace(
+        "MarketData-App/code-review-bot/.github/workflows/review.yml@main",
+        "./.github/workflows/review.yml@main",
+    )
+    files = {"t.yml": TESTS_WORKFLOW, "review.yml": "name: Review\n"}
+    assert callers.activation(caller, files).ok is False
+
+
+def test_the_audit_also_runs_on_a_push_to_the_default_branch(audit_workflow):
+    # 6f21d73b. GitHub disables a SCHEDULED workflow after 60 days of
+    # repository inactivity, which would switch the fleet audit off in exactly
+    # the silence it exists to detect. A push to the default branch runs
+    # trusted code -- unlike a ref-selectable trigger -- and keeps the audit
+    # running on every merge.
+    on = audit_workflow.get(True) or audit_workflow.get("on")
+    assert set(on) == {"schedule", "push"}
+    assert on["push"]["branches"] == ["main"]
