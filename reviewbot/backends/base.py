@@ -13,6 +13,7 @@ from jsonschema import Draft202012Validator
 
 from reviewbot import brief as brief_mod
 from reviewbot import result as result_mod
+from reviewbot.redact import scrub
 
 
 def jsonschema_errors(data, schema: dict) -> list[str]:
@@ -118,6 +119,39 @@ def build(name: str, policy: dict, checkout: str) -> Backend:
     return table[name](policy, checkout)
 
 
+def _report(message: str) -> None:
+    """Say why a backend is not in the review, on the job log.
+
+    The footer renders every absent backend as `<name> unavailable`, which
+    cannot distinguish a backend that never started from one that started and
+    failed. `run` discards the `BackendError` after recording the name, so
+    without this line the reason exists nowhere: not in the comment, not in
+    the lease history, not in the log. Measured 2026-09-21: eleven consecutive
+    sdk-py reviews reported `claude unavailable` with HAVE_CLAUDE true and a
+    token present, and no record said what went wrong.
+
+    Scrubbed, because the reason is CLI output and the runner holds a borrowed
+    `auth.json` whose `access_token` is a JWT.
+    """
+    print(f"reviewbot: {scrub(message)}")
+
+
+def _report_not_invoked(names: list[str], answered: str, mode: str) -> None:
+    """Say that a backend was skipped because it was not needed.
+
+    THE COMMONEST CASE, and the one nothing recorded. `first` and `fallback`
+    stop at the backend that answers and put every later one in the same
+    `missing` list as a failure, so the footer renders `claude unavailable`
+    for a backend that is healthy, installed and simply not required.
+    Measured 2026-09-21 on sdk-py (`backends: [codex, claude]`,
+    `mode: fallback`): eleven consecutive reviews said `claude unavailable`
+    and codex had answered first every time. Nothing was wrong, and no record
+    said so.
+    """
+    for name in names:
+        _report(f"{name} was not invoked; {answered} answered first under mode: {mode}")
+
+
 def live(policy: dict, checkout: str) -> tuple[list[Backend], list[str]]:
     """The backends that are installed and authenticated, in policy order."""
     ready, dropped = [], []
@@ -127,6 +161,10 @@ def live(policy: dict, checkout: str) -> tuple[list[Backend], list[str]]:
             ready.append(backend)
         else:
             dropped.append(name)
+            # Deliberately different wording from the failure line below. This
+            # one means the CLI is absent or holds no credential, so nothing
+            # ran and no tokens were spent.
+            _report(f"{name} is not installed or not authenticated; it will not review")
     return ready, dropped
 
 
@@ -140,17 +178,22 @@ def run(policy: dict, brief: str, checkout: str) -> tuple[list[BackendResult], l
     mode = policy["mode"]
 
     if mode == "first":
-        return [ready[0].review(brief)], missing + [b.name for b in ready[1:]]
+        result = ready[0].review(brief)
+        _report_not_invoked([b.name for b in ready[1:]], ready[0].name, mode)
+        return [result], missing + [b.name for b in ready[1:]]
 
     if mode == "fallback":
         failures = []
         for backend in ready:
             try:
-                return [backend.review(brief)], missing + failures + [
-                    b.name for b in ready[ready.index(backend) + 1 :]
-                ]
-            except BackendError:
+                result = backend.review(brief)
+            except BackendError as exc:
+                _report(str(exc))
                 failures.append(backend.name)
+                continue
+            later = [b.name for b in ready[ready.index(backend) + 1 :]]
+            _report_not_invoked(later, backend.name, mode)
+            return [result], missing + failures + later
         raise BackendError("every backend failed: " + ", ".join(failures))
 
     results, failures = [], []
@@ -159,7 +202,8 @@ def run(policy: dict, brief: str, checkout: str) -> tuple[list[BackendResult], l
         for future, backend in futures.items():
             try:
                 results.append(future.result())
-            except BackendError:
+            except BackendError as exc:
+                _report(str(exc))
                 failures.append(backend.name)
     if not results:
         raise BackendError("every backend failed: " + ", ".join(failures))
