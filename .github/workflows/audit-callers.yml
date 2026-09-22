@@ -108,7 +108,7 @@ jobs:
           # code-review-bot is here as well as `api` because BOTH audits
           # resolve each caller's pinned ref against this repository's
           # .github/workflows/review.yml.
-          repositories: >-
+          repositories: |
             api
             code-review-bot
 
@@ -119,7 +119,7 @@ jobs:
           app-id: ${{ secrets.CODE_REVIEW_APP_ID }}
           private-key: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
           owner: MarketDataApp
-          repositories: >-
+          repositories: |
             sdk-py
             sdk-go
             sdk-js
