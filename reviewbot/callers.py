@@ -25,6 +25,12 @@ import dataclasses
 
 import yaml
 
+# The one reusable workflow a caller may invoke. A suffix match accepted any
+# `.../review.yml`, so a typoed owner or an unrelated repository's file passed
+# the audit while invoking nothing here.
+REVIEW_WORKFLOW = "MarketData-App/code-review-bot/.github/workflows/review.yml"
+LOCAL_REVIEW_WORKFLOW = "./.github/workflows/review.yml"
+
 
 @dataclasses.dataclass(frozen=True)
 class Activation:
@@ -64,7 +70,7 @@ def runs_on_pull_request(on) -> bool:
 
 
 def _pull_request_workflows(files: dict) -> dict:
-    """{workflow name: filename} for every workflow that runs on a pull request.
+    """{workflow name: [filename, ...]} for every workflow that runs on a pull request.
 
     The filename comes back too, because a workflow can be switched off in the
     Actions UI while its file stays exactly where it is -- and `state` is keyed
@@ -84,7 +90,10 @@ def _pull_request_workflows(files: dict) -> dict:
             continue
         on = spec.get(True, spec.get("on"))
         if runs_on_pull_request(on) and isinstance(spec.get("name"), str):
-            found.setdefault(spec["name"], filename)
+            # EVERY filename, not the first. Two workflows may share a
+            # `name:`; keeping one meant a disabled duplicate could mask an
+            # active workflow and report a false failure.
+            found.setdefault(spec["name"], []).append(filename)
     return found
 
 
@@ -105,17 +114,27 @@ def _as_names(value) -> list[str] | None:
     return None
 
 
-def _calls_the_review_workflow(caller: dict) -> bool:
-    """Does any job in this caller invoke the reusable review workflow?
+def _calls_the_review_workflow(caller: dict, workflow_files: dict) -> bool:
+    """Does any job in this caller invoke THIS bot's reusable workflow?
 
-    A caller can carry a flawless `on:` block and still start nothing. Accepts
-    the cross-repository form at any ref and the local
-    `./.github/workflows/review.yml` that self-review.yml uses.
+    A caller can carry a flawless `on:` block and still start nothing, so the
+    job is checked too -- and against the canonical target, at any ref. A
+    suffix match would accept `SomeoneElse/code-review-bot/...`, a typoed
+    owner, or `MarketDataApp/...` for `MarketData-App/...`: all of them real
+    files that are not this workflow.
+
+    The local form is what self-review.yml uses, and it is accepted only when
+    the file it names is actually present.
     """
     jobs = caller.get("jobs") if isinstance(caller, dict) else None
     for job in (jobs or {}).values():
         uses = job.get("uses") if isinstance(job, dict) else None
-        if isinstance(uses, str) and uses.split("@", 1)[0].endswith(".github/workflows/review.yml"):
+        if not isinstance(uses, str):
+            continue
+        target = uses.split("@", 1)[0]
+        if target == REVIEW_WORKFLOW:
+            return True
+        if target == LOCAL_REVIEW_WORKFLOW and "review.yml" in (workflow_files or {}):
             return True
     return False
 
@@ -144,9 +163,11 @@ def activation(
     # A PERFECT TRIGGER THAT STARTS NOTHING. The caller must actually call the
     # reusable workflow; without this a file with the right `on:` and an
     # unrelated job reported healthy.
-    if not _calls_the_review_workflow(caller):
+    if not _calls_the_review_workflow(caller, workflow_files):
         return Activation(
-            False, [], ["no job calls code-review-bot's review.yml; the trigger starts nothing"]
+            False,
+            [],
+            [f"no job calls {REVIEW_WORKFLOW}; the trigger starts nothing"],
         )
 
     on = triggers(caller)
@@ -236,16 +257,19 @@ def activation(
             )
             continue
         if states is not None:
-            state = states.get(available[name])
-            if state is None:
-                reasons.append(
-                    f"{name!r} ({available[name]}) has no Actions state; it could not be verified"
-                )
-                continue
-            if state != "active":
-                reasons.append(
-                    f"{name!r} ({available[name]}) is {state} in Actions; it fires no workflow_run"
-                )
+            # GitHub fires the caller if ANY workflow with this name is
+            # active, so the name passes when any of its files does.
+            seen = {f: states.get(f) for f in available[name]}
+            if not any(state == "active" for state in seen.values()):
+                unknown = [f for f, state in seen.items() if state is None]
+                if unknown:
+                    reasons.append(
+                        f"{name!r} ({', '.join(unknown)}) has no Actions state; "
+                        f"it could not be verified"
+                    )
+                else:
+                    detail = ", ".join(f"{f} is {s}" for f, s in sorted(seen.items()))
+                    reasons.append(f"{name!r} fires no workflow_run: {detail}")
                 continue
         matched.append(name)
 

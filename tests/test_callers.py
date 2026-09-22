@@ -593,15 +593,6 @@ def test_a_caller_calling_the_review_workflow_at_any_ref_is_accepted():
         assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is True
 
 
-def test_a_local_call_to_the_reusable_workflow_is_accepted():
-    # self-review.yml's shape: `uses: ./.github/workflows/review.yml`.
-    caller = ARMED.replace(
-        "MarketData-App/code-review-bot/.github/workflows/review.yml@main",
-        "./.github/workflows/review.yml",
-    )
-    assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is True
-
-
 def test_a_requested_state_mapping_that_omits_a_file_is_reported():
     # 3089e71a. `states={}` means we asked and got nothing back, which is not
     # the same as `states=None` meaning we never asked.
@@ -645,3 +636,63 @@ def test_workflow_states_follows_pages():
     got = GitHub("o/r", "t", transport=transport).workflow_states()
     assert len(got) == 101
     assert got["last.yml"] == "active"
+
+
+# --- round five ------------------------------------------------------------
+
+
+def test_a_caller_pointing_at_another_repositorys_review_yml_is_reported():
+    # 252860e7. The suffix check accepted any `.../review.yml`, so a typoed
+    # owner or an unrelated repository's file passed while invoking nothing
+    # here.
+    for wrong in (
+        "MarketData-App/code-review-bo/.github/workflows/review.yml@main",
+        "SomeoneElse/code-review-bot/.github/workflows/review.yml@main",
+        "MarketDataApp/code-review-bot/.github/workflows/review.yml@main",
+    ):
+        caller = ARMED.replace(
+            "MarketData-App/code-review-bot/.github/workflows/review.yml@main", wrong
+        )
+        got = callers.activation(caller, {"t.yml": TESTS_WORKFLOW})
+        assert got.ok is False, wrong
+
+
+def test_the_canonical_cross_repository_target_is_accepted_at_any_ref():
+    for ref in ("@main", "@v1", "@abc1234"):
+        caller = ARMED.replace("review.yml@main", f"review.yml{ref}")
+        assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is True, ref
+
+
+def test_a_local_call_is_accepted_only_when_the_file_is_really_there():
+    caller = ARMED.replace(
+        "MarketData-App/code-review-bot/.github/workflows/review.yml@main",
+        "./.github/workflows/review.yml",
+    )
+    # Present: this is self-review.yml's shape.
+    ok = callers.activation(caller, {"t.yml": TESTS_WORKFLOW, "review.yml": "name: Review\n"})
+    assert ok.ok is True, ok.reasons
+    # Absent: it calls a file that does not exist.
+    assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is False
+
+
+def test_a_name_shared_by_two_workflows_passes_when_either_is_active():
+    # 853cdb83. Keeping one filename per name meant a disabled duplicate could
+    # mask an active workflow and produce a false failure.
+    files = {
+        "code-review.yml": ARMED,
+        "old.yml": TESTS_WORKFLOW,
+        "new.yml": TESTS_WORKFLOW,
+    }
+    states = {"code-review.yml": "active", "old.yml": "disabled_manually", "new.yml": "active"}
+    got = callers.activation(ARMED, files, states=states)
+    assert got.ok is True, got.reasons
+
+
+def test_a_name_shared_by_two_disabled_workflows_still_fails():
+    files = {"code-review.yml": ARMED, "old.yml": TESTS_WORKFLOW, "new.yml": TESTS_WORKFLOW}
+    states = {
+        "code-review.yml": "active",
+        "old.yml": "disabled_manually",
+        "new.yml": "disabled_inactivity",
+    }
+    assert callers.activation(ARMED, files, states=states).ok is False
