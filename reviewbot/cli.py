@@ -757,6 +757,77 @@ def credential_checkout(
         return 0
 
 
+def audit_callers(repos: list, token: str) -> int:
+    """Assert that every named repository will actually start a review.
+
+    Exits NON-ZERO when any will not. That is the whole point: the failure
+    being guarded against is silent, so the guard must be loud. A warning
+    printed into a green run would reproduce the bug it is checking for.
+
+    An unreadable repository fails too. "We could not look" is not "it is
+    fine" -- a deleted or renamed caller answers 404, and an audit that
+    shrugged at that would report the broken case as healthy.
+    """
+    from reviewbot import callers as callers_mod
+
+    REVIEW_WORKFLOW_PATH = ".github/workflows/review.yml"
+
+    # THE BOT REPOSITORY NEEDS ITS OWN CREDENTIAL. An installation token
+    # reaches only its own account, so the user-account audit cannot read the
+    # organisation-owned bot repository with the token it audits SDKs with.
+    # That failure used to be swallowed into "refs not checked", silently
+    # disabling the check for all six SDK repositories while still reporting
+    # green -- precisely the failure this command exists to catch.
+    bot_repo = callers_mod.REVIEW_WORKFLOW.split("/.github/")[0]
+    bot_token = os.environ.get("REVIEWBOT_BOT_TOKEN") or token
+    bot_api = _store_api(bot_repo, bot_token)
+    resolved: dict = {}
+
+    def ref_resolver(ref: str) -> bool:
+        """Is the reusable workflow present at this ref? Cached per ref."""
+        if ref not in resolved:
+            resolved[ref] = bool(bot_api.file_at_ref(REVIEW_WORKFLOW_PATH, ref))
+        return resolved[ref]
+
+    results = {}
+    unreadable = {}
+    for repo in repos:
+        try:
+            api = _store_api(repo, token)
+            files = api.workflow_files()
+            # Contents alone cannot see a workflow switched off in the Actions
+            # UI: the file stays put and nothing runs.
+            states = api.workflow_states()
+        except Exception as exc:  # noqa: BLE001 - any failure to read is a failure
+            unreadable[repo] = f"{type(exc).__name__}: {scrub(str(exc))}"
+            continue
+        try:
+            results[repo] = callers_mod.activation(
+                files.get("code-review.yml"), files, states, ref_resolver
+            )
+        except Exception as exc:  # noqa: BLE001 - unresolvable refs are a failure
+            unreadable[repo] = (
+                f"could not resolve the bot's refs ({type(exc).__name__}: "
+                f"{scrub(str(exc))}); set REVIEWBOT_BOT_TOKEN to a token that can "
+                f"read {bot_repo}"
+            )
+
+    print(f"Code review activation, {len(repos)} repositor{'y' if len(repos) == 1 else 'ies'}\n")
+    if results:
+        print(callers_mod.report(results))
+    for repo, why in sorted(unreadable.items()):
+        print(f"  {repo:<34} COULD NOT BE READ: {why}")
+
+    broken = [r for r, g in results.items() if not g.ok] + list(unreadable)
+    if broken:
+        print(
+            f"\n{len(broken)} of {len(repos)} will not start a review: {', '.join(sorted(broken))}"
+        )
+        return 1
+    print(f"\nAll {len(repos)} will start a review when a pull request's CI finishes.")
+    return 0
+
+
 def _positive_days(text: str) -> int:
     """A window of zero or fewer days is refused rather than reported on.
 
@@ -922,6 +993,15 @@ def main(argv: list[str] | None = None) -> int:
     checkin.add_argument("--holder", required=True, help="who took the lease")
     checkin.add_argument("--codex-home", required=True, help="the directory to remove")
 
+    audit = sub.add_parser(
+        "audit-callers", help="assert every target repository will actually start a review"
+    )
+    audit.add_argument(
+        "repos",
+        nargs="+",
+        help="owner/name of each target repository to check",
+    )
+
     report = sub.add_parser("lease-report", help="who held the Codex credential, and for how long")
     report.add_argument(
         "--store",
@@ -960,6 +1040,8 @@ def main(argv: list[str] | None = None) -> int:
         return credential_checkin(args.store, args.holder, args.codex_home, token)
     if args.command == "lease-report":
         return lease_report(args.store, args.days, token)
+    if args.command == "audit-callers":
+        return audit_callers(args.repos, token)
 
     if not args.repo:
         parser.error("GITHUB_REPOSITORY is not set and --repo was not given")

@@ -274,6 +274,77 @@ class GitHub:
             f"?path={urllib.parse.quote(path)}&sha={urllib.parse.quote(branch)}&since={urllib.parse.quote(since.isoformat())}"
         )
 
+    def workflow_files(self) -> dict:
+        """Every file in `.github/workflows`, as {filename: text}.
+
+        Used by `audit-callers` to answer the question GitHub answers
+        silently: does the name in a caller's `workflow_run.workflows` match a
+        workflow that actually exists and actually runs on pull requests?
+        """
+        import base64
+
+        listing = self._request(
+            "GET", f"/repos/{self.repo}/contents/{urllib.parse.quote('.github/workflows')}"
+        ).data
+        out = {}
+        for item in listing if isinstance(listing, list) else []:
+            if item.get("type") != "file" or not item.get("name", "").endswith((".yml", ".yaml")):
+                continue
+            blob = self._request("GET", f"/repos/{self.repo}/git/blobs/{item['sha']}").data or {}
+            if blob.get("encoding") == "base64":
+                out[item["name"]] = base64.b64decode(blob["content"]).decode("utf-8", "replace")
+        return out
+
+    def workflow_states(self) -> dict:
+        """{filename: state} from the Actions API: `active`, `disabled_*`.
+
+        A workflow switched off in the Actions UI keeps its file exactly where
+        it was and runs nothing, so `workflow_files` alone cannot see it.
+        GitHub also disables SCHEDULED workflows after 60 days of repository
+        inactivity, which is how a quiet repository would lose its reviews
+        without anybody touching a file.
+        """
+        # NOT `_paged`: this endpoint answers with an OBJECT,
+        # `{total_count, workflows: [...]}`, and `_paged` extends a list with
+        # whatever it is given -- so a dict contributed its KEYS as strings and
+        # every repository reported `'str' object has no attribute 'get'`. The
+        # stubbed unit tests could not see it; the live fleet could.
+        out, page = {}, 1
+        while True:
+            reply = (
+                self._request(
+                    "GET", f"/repos/{self.repo}/actions/workflows?per_page=100&page={page}"
+                ).data
+                or {}
+            )
+            found = reply.get("workflows") if isinstance(reply, dict) else None
+            found = found if isinstance(found, list) else []
+            for item in found:
+                if not isinstance(item, dict):
+                    continue
+                path = item.get("path") or ""
+                if path.startswith(".github/workflows/"):
+                    out[path.rsplit("/", 1)[-1]] = item.get("state") or ""
+            # A short page is the last one. Paged here rather than through
+            # `_paged`, which extends a LIST and cannot read this envelope.
+            if len(found) < 100:
+                return out
+            page += 1
+
+    def ref_names(self) -> set:
+        """Every branch and tag name in this repository.
+
+        A caller pins the reusable workflow at a ref. A typoed one is a 404
+        when the review tries to run and looks perfectly healthy on disk, so
+        the auditor resolves them.
+        """
+        out = set()
+        for kind in ("branches", "tags"):
+            for item in self._paged(f"/repos/{self.repo}/{kind}") or []:
+                if isinstance(item, dict) and item.get("name"):
+                    out.add(item["name"])
+        return out
+
     def pull_for_sha(self, sha: str) -> int | None:
         """The open pull request whose head is `sha`, or None.
 
