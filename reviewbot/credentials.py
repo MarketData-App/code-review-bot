@@ -116,6 +116,34 @@ def _held(lease: dict, now: datetime.datetime) -> bool:
     return when > now
 
 
+def lease_message(verb: str, holder: str) -> str:
+    """The commit message for a lease write. NEVER the raw holder.
+
+    `holder` is `<owner>/<repo>#<pr>#<run>-<attempt>`, and `<owner>/<repo>#<pr>`
+    is exactly GitHub's cross-repository issue reference syntax. Writing it into
+    a commit message in the store posted a "referenced this in
+    code-review-credentials" event onto the pull request's own timeline -- once
+    on borrow and once on return, on every review, for the life of the branch.
+    Measured 2026-09-22 on MarketData-App/api#463: twelve lease commits, twelve
+    timeline events, timestamps matching to the second.
+
+    So the message spells the same three facts without the `#`. The HOLDER is
+    untouched: `release` compares it to decide whether this run still owns the
+    lease, and that identity is the whole reason it carries the run id and
+    attempt. Only the human-facing text changes.
+
+    `lease_spans` reads both this and the old `#`-joined form, because the
+    store holds months of the old one.
+    """
+    repo, *rest = holder.split("#")
+    out = f"lease {verb} by {repo}"
+    if len(rest) >= 1 and rest[0]:
+        out += f" pull {rest[0]}"
+    if len(rest) >= 2 and rest[1]:
+        out += f" run {rest[1]}"
+    return out
+
+
 def acquire(api, holder: str, run_url: str, now: datetime.datetime, ttl_minutes: int = 20) -> bool:
     """Take the lease, or return False. Never raises for an ordinary loss.
 
@@ -133,7 +161,11 @@ def acquire(api, holder: str, run_url: str, now: datetime.datetime, ttl_minutes:
         "expires_at": (now + datetime.timedelta(minutes=ttl_minutes)).isoformat(),
     }
     return api.put_file(
-        LEASE_PATH, json.dumps(body, indent=2) + "\n", f"lease taken by {holder}", LEASE_BRANCH, sha
+        LEASE_PATH,
+        json.dumps(body, indent=2) + "\n",
+        lease_message("taken", holder),
+        LEASE_BRANCH,
+        sha,
     )
 
 
@@ -158,7 +190,11 @@ def release(api, holder: str) -> None:
         return
     body = {"holder": None, "run_url": None, "acquired_at": None, "expires_at": None}
     api.put_file(
-        LEASE_PATH, json.dumps(body, indent=2) + "\n", f"lease freed by {holder}", LEASE_BRANCH, sha
+        LEASE_PATH,
+        json.dumps(body, indent=2) + "\n",
+        lease_message("freed", holder),
+        LEASE_BRANCH,
+        sha,
     )
 
 
@@ -175,7 +211,10 @@ def release(api, holder: str) -> None:
 # module reports occupancy, and `lease_report` points the reader at the log
 # string for the question the history cannot answer.
 
-_LEASE_MESSAGE = re.compile(r"^lease (taken|freed) by (\S+)$")
+# BOTH MESSAGE FORMATS. The trailing groups are the form `lease_message`
+# writes now; a token carrying `#` is the form written before 2026-09-22,
+# and the store holds months of it.
+_LEASE_MESSAGE = re.compile(r"^lease (taken|freed) by (\S+)(?: pull (\S+))?(?: run (\S+))?$")
 
 # How far BEFORE the reported window to read the history.
 #
@@ -246,14 +285,28 @@ def lease_spans(commits: list[dict]) -> list[LeaseSpan]:
     is skipped for the same reason `_held` treats an unparseable lease as free
     -- this must not be the thing that breaks.
     """
-    open_spans: dict[str, datetime.datetime] = {}
+    open_spans: dict[tuple, tuple[str, datetime.datetime]] = {}
     out: list[LeaseSpan] = []
     for entry in reversed(commits or []):
         body = (entry.get("commit") or {}).get("message") or ""
         match = _LEASE_MESSAGE.match(body.strip().splitlines()[0] if body.strip() else "")
         if not match:
             continue
-        verb, holder = match.group(1), match.group(2)
+        verb, token = match.group(1), match.group(2)
+        # One key and one holder for one hold, whichever format wrote it, so a
+        # `taken` pairs with its `freed` on identity rather than on spelling
+        # and `LeaseSpan.holder` reads the same either way.
+        if "#" in token:
+            repo, pr, run = _parse_holder(token)
+            holder = token
+        else:
+            repo, run = token, match.group(4) or ""
+            raw_pr = match.group(3)
+            pr = int(raw_pr) if raw_pr and raw_pr.isdigit() else None
+            # Rebuilt, never padded: a hold with no pull request is
+            # `verification`, not `verification#None#`.
+            holder = "#".join([repo, *([raw_pr] if raw_pr else []), *([run] if run else [])])
+        key = (repo, pr, run)
         stamp = ((entry.get("commit") or {}).get("committer") or {}).get("date")
         try:
             when = datetime.datetime.fromisoformat((stamp or "").replace("Z", "+00:00"))
@@ -262,15 +315,13 @@ def lease_spans(commits: list[dict]) -> list[LeaseSpan]:
         if when.tzinfo is None:
             when = when.replace(tzinfo=datetime.UTC)
         if verb == "taken":
-            open_spans[holder] = when
+            open_spans[key] = (holder, when)
             continue
-        start = open_spans.pop(holder, None)
-        if start is None:
+        found = open_spans.pop(key, None)
+        if found is None:
             continue
-        repo, pr, run = _parse_holder(holder)
-        out.append(LeaseSpan(holder, repo, pr, run, start, when))
-    for holder, start in open_spans.items():
-        repo, pr, run = _parse_holder(holder)
+        out.append(LeaseSpan(found[0], repo, pr, run, start=found[1], end=when))
+    for (repo, pr, run), (holder, start) in open_spans.items():
         out.append(LeaseSpan(holder, repo, pr, run, start, None))
     out.sort(key=lambda s: s.start)
     return out

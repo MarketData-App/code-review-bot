@@ -270,3 +270,68 @@ def test_a_run_still_frees_its_own_lease(store):
     credentials.release(api, "MarketData-App/sdk-py#100#551-1")
     written = json.loads(base64.b64decode(transport.calls[-1]["body"]["content"]))
     assert written["holder"] is None
+
+
+# --- the commit message must not reference the pull request ----------------
+#
+# `holder` is `<owner>/<repo>#<pr>#<run>-<attempt>`, and `<owner>/<repo>#<pr>`
+# is GitHub's CROSS-REPOSITORY ISSUE REFERENCE syntax. Putting it in a commit
+# message posted a "referenced this in code-review-credentials" event onto the
+# pull request's timeline -- twice per review, on every review, forever.
+# Measured 2026-09-22 on MarketData-App/api#463: twelve lease commits, twelve
+# timeline events, timestamps matching to the second.
+#
+# The holder itself is unchanged: `release` compares it to decide whether this
+# run still owns the lease, and that identity is why it carries the run id.
+# Only the human-facing message is rewritten.
+
+HOLDER = "MarketData-App/api#463#35743856939-1"
+
+
+def _message_of(transport):
+    return transport.calls[-1]["body"]["message"]
+
+
+def test_acquire_does_not_write_a_cross_repository_reference(store):
+    api, transport = store
+    lease_body(transport, None, None)
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    credentials.acquire(api, HOLDER, "https://run/1", NOW)
+    assert "#" not in _message_of(transport)
+    assert "api#463" not in _message_of(transport)
+
+
+def test_release_does_not_write_a_cross_repository_reference(store):
+    api, transport = store
+    lease_body(transport, HOLDER, "2026-09-16T14:20:00+00:00")
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    credentials.release(api, HOLDER)
+    assert "#" not in _message_of(transport)
+
+
+def test_the_message_still_names_the_repository_pull_request_and_run(store):
+    api, transport = store
+    lease_body(transport, None, None)
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    credentials.acquire(api, HOLDER, "https://run/1", NOW)
+    message = _message_of(transport)
+    assert message == "lease taken by MarketData-App/api pull 463 run 35743856939-1"
+
+
+def test_the_lease_body_still_carries_the_holder_unchanged(store):
+    # The identity `release` compares. Changing it would reopen the race that
+    # `#<run_id>-<run_attempt>` was added to close.
+    api, transport = store
+    lease_body(transport, None, None)
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    credentials.acquire(api, HOLDER, "https://run/1", NOW)
+    written = json.loads(base64.b64decode(transport.calls[-1]["body"]["content"]))
+    assert written["holder"] == HOLDER
+
+
+def test_a_holder_with_no_pull_request_still_gets_a_message(store):
+    api, transport = store
+    lease_body(transport, None, None)
+    transport.add("PUT", f"/repos/{STORE}/contents/codex/lease.json", data={"commit": {}})
+    credentials.acquire(api, "verification", "https://run/1", NOW)
+    assert _message_of(transport) == "lease taken by verification"
