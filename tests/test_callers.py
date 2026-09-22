@@ -571,11 +571,29 @@ def test_the_tokens_are_scoped_to_the_audited_repositories(audit_workflow):
     steps = audit_workflow["jobs"]["audit"]["steps"]
     tokens = [s for s in steps if "create-github-app-token" in str(s.get("uses", ""))]
     assert tokens, "no token steps found"
+
+    # SPLIT THE WAY THE ACTION DOES -- on newlines and commas, never on
+    # spaces. `repositories: >-` folds its lines into one space-joined string,
+    # which the action reads as a SINGLE repository name; it asked GitHub for
+    # "MarketData-App/api code-review-bot" and got a 404, leaving both tokens
+    # empty. Splitting on whitespace here passed for the broken form and the
+    # correct one alike, so the test has to use the action's own separators.
+    def as_action_reads_it(value):
+        parts = str(value).replace(",", "\n").split("\n")
+        return {p.strip() for p in parts if p.strip()}
+
     scoped = {
-        s["with"]["owner"]: set(str(s["with"]["repositories"]).split())
+        s["with"]["owner"]: as_action_reads_it(s["with"]["repositories"])
         for s in tokens
         if s["with"].get("repositories")
     }
+    for step in tokens:
+        value = str(step["with"].get("repositories", ""))
+        for line in value.replace(",", "\n").split("\n"):
+            assert " " not in line.strip(), (
+                f"{step['with']['owner']}: {line.strip()!r} is not one repository name; "
+                f"`>-` folds the list into a single string"
+            )
     assert len(scoped) == len(tokens), "a token step has no `repositories:` restriction"
     env = audit_workflow["env"]
     for owner, key in (("MarketData-App", "ORG_REPOS"), ("MarketDataApp", "USER_REPOS")):
