@@ -151,6 +151,29 @@ def activation(caller_text: str | None, workflow_files: dict) -> Activation:
     elif not wanted:
         reasons.append("workflow_run.workflows is empty; it matches nothing")
 
+    # BRANCH FILTERS, which apply to the TRIGGERING run's branch -- the pull
+    # request's head branch, not the base. A caller filtered to `main`
+    # therefore fires for pushes to main and never for a pull request, while
+    # every other check on that pull request stays green. Nothing in the
+    # fleet uses one today; the point is that adopting one would disable
+    # reviews as silently as a renamed workflow.
+    for key in ("branches", "branches-ignore"):
+        if key not in run_on:
+            continue
+        patterns = _as_names(run_on[key])
+        if patterns is None:
+            reasons.append(f"workflow_run.{key} is {run_on[key]!r}; it must be a list of patterns")
+        elif key == "branches" and not any(p in ("*", "**") for p in patterns):
+            reasons.append(
+                f"workflow_run.branches is {patterns!r}; a pull request's head branch is "
+                f"arbitrary, so a review only starts for branches matching that list"
+            )
+        elif key == "branches-ignore":
+            reasons.append(
+                f"workflow_run.branches-ignore is {patterns!r}; a pull request from one of "
+                f"those branches starts no review"
+            )
+
     available = _pull_request_workflow_names(workflow_files)
     matched = []
     for name in wanted:

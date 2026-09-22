@@ -378,3 +378,50 @@ def test_a_non_string_workflow_name_is_rejected():
     caller = ARMED.replace('workflows: ["Tests"]', "workflows: [123]")
     got = callers.activation(caller, workflows(**{"test.yml": TESTS_WORKFLOW}))
     assert got.ok is False
+
+
+# --- branch filters (2ef2f9cc, from the bot's review of PR #21) ------------
+#
+# `workflow_run` accepts `branches` / `branches-ignore`, and GitHub applies
+# them to the TRIGGERING run's branch -- the pull request's head branch, not
+# the base. A caller filtered to `main` therefore never fires for a pull
+# request, while every other check stays green: the exact silent failure this
+# auditor exists to catch, one level deeper than where it was looking.
+
+
+def _with_branches(key, value):
+    return ARMED.replace(
+        '    workflows: ["Tests"]', f'    workflows: ["Tests"]\n    {key}: {value}'
+    )
+
+
+def test_a_branch_filter_that_excludes_feature_branches_is_reported():
+    got = callers.activation(_with_branches("branches", '["main"]'), {"t.yml": TESTS_WORKFLOW})
+    assert got.ok is False
+    assert any("branches" in r for r in got.reasons)
+
+
+def test_a_catch_all_branch_filter_is_accepted():
+    for pattern in ('["**"]', '["*"]'):
+        got = callers.activation(_with_branches("branches", pattern), {"t.yml": TESTS_WORKFLOW})
+        assert got.ok is True, (pattern, got.reasons)
+
+
+def test_branches_ignore_is_reported_because_it_disables_some_branches():
+    got = callers.activation(
+        _with_branches("branches-ignore", '["dependabot/**"]'), {"t.yml": TESTS_WORKFLOW}
+    )
+    assert got.ok is False
+    assert any("branches-ignore" in r for r in got.reasons)
+
+
+def test_a_malformed_branch_filter_is_reported():
+    got = callers.activation(
+        _with_branches("branches", "\n      main: null"), {"t.yml": TESTS_WORKFLOW}
+    )
+    assert got.ok is False
+
+
+def test_no_branch_filter_at_all_stays_healthy():
+    got = callers.activation(ARMED, {"t.yml": TESTS_WORKFLOW})
+    assert got.ok is True
