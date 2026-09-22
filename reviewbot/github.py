@@ -331,6 +331,20 @@ class GitHub:
                 return out
             page += 1
 
+    def ref_names(self) -> set:
+        """Every branch and tag name in this repository.
+
+        A caller pins the reusable workflow at a ref. A typoed one is a 404
+        when the review tries to run and looks perfectly healthy on disk, so
+        the auditor resolves them.
+        """
+        out = set()
+        for kind in ("branches", "tags"):
+            for item in self._paged(f"/repos/{self.repo}/{kind}") or []:
+                if isinstance(item, dict) and item.get("name"):
+                    out.add(item["name"])
+        return out
+
     def pull_for_sha(self, sha: str) -> int | None:
         """The open pull request whose head is `sha`, or None.
 

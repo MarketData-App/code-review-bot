@@ -114,7 +114,9 @@ def _as_names(value) -> list[str] | None:
     return None
 
 
-def _calls_the_review_workflow(caller: dict, workflow_files: dict) -> bool:
+def _calls_the_review_workflow(
+    caller: dict, workflow_files: dict, known_refs: set | None = None
+) -> tuple[bool, str]:
     """Does any job in this caller invoke THIS bot's reusable workflow?
 
     A caller can carry a flawless `on:` block and still start nothing, so the
@@ -127,6 +129,7 @@ def _calls_the_review_workflow(caller: dict, workflow_files: dict) -> bool:
     the file it names is actually present.
     """
     jobs = caller.get("jobs") if isinstance(caller, dict) else None
+    problems = []
     for job in (jobs or {}).values():
         uses = job.get("uses") if isinstance(job, dict) else None
         if not isinstance(uses, str):
@@ -137,15 +140,38 @@ def _calls_the_review_workflow(caller: dict, workflow_files: dict) -> bool:
         # only at the path accepted both illegal spellings.
         if "@" in uses:
             target, _, ref = uses.partition("@")
-            if target == REVIEW_WORKFLOW and ref:
-                return True
-        elif uses == LOCAL_REVIEW_WORKFLOW and "review.yml" in (workflow_files or {}):
-            return True
-    return False
+            if target != REVIEW_WORKFLOW or not ref:
+                continue
+            # A ref that does not resolve is a 404 at run time. `known_refs`
+            # is None when nobody looked, which is not the same as broken.
+            if known_refs is not None and ref not in known_refs:
+                problems.append(f"{uses} names ref {ref!r}, which does not resolve in the bot")
+                continue
+            return True, ""
+        if uses != LOCAL_REVIEW_WORKFLOW:
+            continue
+        local = (workflow_files or {}).get("review.yml")
+        if local is None:
+            problems.append(f"{uses} names a file that is not in .github/workflows")
+            continue
+        # A local file is only callable if it is REUSABLE.
+        try:
+            spec = yaml.safe_load(local) or {}
+        except yaml.YAMLError:
+            problems.append("review.yml could not be read")
+            continue
+        if "workflow_call" not in triggers(spec):
+            problems.append("review.yml does not declare workflow_call; `uses:` cannot invoke it")
+            continue
+        return True, ""
+    return False, problems[0] if problems else ""
 
 
 def activation(
-    caller_text: str | None, workflow_files: dict, states: dict | None = None
+    caller_text: str | None,
+    workflow_files: dict,
+    states: dict | None = None,
+    known_refs: set | None = None,
 ) -> Activation:
     """Will this caller start a review when a pull request's CI finishes?
 
@@ -168,11 +194,12 @@ def activation(
     # A PERFECT TRIGGER THAT STARTS NOTHING. The caller must actually call the
     # reusable workflow; without this a file with the right `on:` and an
     # unrelated job reported healthy.
-    if not _calls_the_review_workflow(caller, workflow_files):
+    calls, why = _calls_the_review_workflow(caller, workflow_files, known_refs)
+    if not calls:
         return Activation(
             False,
             [],
-            [f"no job calls {REVIEW_WORKFLOW}; the trigger starts nothing"],
+            [why or f"no job calls {REVIEW_WORKFLOW}; the trigger starts nothing"],
         )
 
     on = triggers(caller)

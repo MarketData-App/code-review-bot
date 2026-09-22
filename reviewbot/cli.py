@@ -770,6 +770,17 @@ def audit_callers(repos: list, token: str) -> int:
     """
     from reviewbot import callers as callers_mod
 
+    # Resolve the bot's own refs ONCE. A caller pinned at a typoed ref is a
+    # 404 at run time and would otherwise get a healthy verdict. None means we
+    # could not look, which `activation` treats as "not checked" rather than
+    # "broken".
+    known_refs = None
+    try:
+        bot = _store_api(callers_mod.REVIEW_WORKFLOW.split("/.github/")[0], token)
+        known_refs = bot.ref_names()
+    except Exception as exc:  # noqa: BLE001 - a probe, never fatal
+        print(f"reviewbot: could not list the bot's refs ({scrub(str(exc))}); not checking them)")
+
     results = {}
     unreadable = {}
     for repo in repos:
@@ -782,7 +793,9 @@ def audit_callers(repos: list, token: str) -> int:
         except Exception as exc:  # noqa: BLE001 - any failure to read is a failure
             unreadable[repo] = f"{type(exc).__name__}: {scrub(str(exc))}"
             continue
-        results[repo] = callers_mod.activation(files.get("code-review.yml"), files, states)
+        results[repo] = callers_mod.activation(
+            files.get("code-review.yml"), files, states, known_refs
+        )
 
     print(f"Code review activation, {len(repos)} repositor{'y' if len(repos) == 1 else 'ies'}\n")
     if results:

@@ -673,8 +673,11 @@ def test_a_local_call_is_accepted_only_when_the_file_is_really_there():
         "MarketData-App/code-review-bot/.github/workflows/review.yml@main",
         "./.github/workflows/review.yml",
     )
-    # Present: this is self-review.yml's shape.
-    ok = callers.activation(caller, {"t.yml": TESTS_WORKFLOW, "review.yml": "name: Review\n"})
+    # Present AND reusable: this is self-review.yml's shape. A local file that
+    # does not declare `workflow_call` cannot be invoked by `uses:` at all,
+    # which is covered by test_a_local_review_workflow_without_workflow_call_is_rejected.
+    reusable = "name: Review\non:\n  workflow_call:\njobs:\n  r:\n    runs-on: x\n"
+    ok = callers.activation(caller, {"t.yml": TESTS_WORKFLOW, "review.yml": reusable})
     assert ok.ok is True, ok.reasons
     # Absent: it calls a file that does not exist.
     assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is False
@@ -736,3 +739,41 @@ def test_the_audit_also_runs_on_a_push_to_the_default_branch(audit_workflow):
     on = audit_workflow.get(True) or audit_workflow.get("on")
     assert set(on) == {"schedule", "push"}
     assert on["push"]["branches"] == ["main"]
+
+
+# --- round seven -----------------------------------------------------------
+
+
+LOCAL_CALLER = ARMED.replace(
+    "MarketData-App/code-review-bot/.github/workflows/review.yml@main",
+    "./.github/workflows/review.yml",
+)
+REUSABLE = "name: Review\non:\n  workflow_call:\n    inputs: {}\njobs:\n  r:\n    runs-on: x\n"
+
+
+def test_a_local_review_workflow_without_workflow_call_is_rejected():
+    # ceab3dec. A local file that is not reusable cannot be invoked by `uses:`.
+    files = {"t.yml": TESTS_WORKFLOW, "review.yml": "name: Review\non:\n  push:\n"}
+    assert callers.activation(LOCAL_CALLER, files).ok is False
+
+
+def test_a_local_review_workflow_exposing_workflow_call_is_accepted():
+    files = {"t.yml": TESTS_WORKFLOW, "review.yml": REUSABLE}
+    got = callers.activation(LOCAL_CALLER, files)
+    assert got.ok is True, got.reasons
+
+
+def test_a_cross_repository_ref_that_does_not_resolve_is_rejected():
+    # A typoed ref is a 404 at run time and a healthy verdict here.
+    caller = ARMED.replace("review.yml@main", "review.yml@mian")
+    got = callers.activation(ARMED, {"t.yml": TESTS_WORKFLOW}, known_refs={"main", "v1"})
+    assert got.ok is True, got.reasons
+    bad = callers.activation(caller, {"t.yml": TESTS_WORKFLOW}, known_refs={"main", "v1"})
+    assert bad.ok is False
+    assert any("mian" in r for r in bad.reasons)
+
+
+def test_refs_are_not_checked_when_they_were_not_resolved():
+    # `known_refs=None` means we did not look, which is not "it is broken".
+    caller = ARMED.replace("review.yml@main", "review.yml@whatever")
+    assert callers.activation(caller, {"t.yml": TESTS_WORKFLOW}).ok is True
