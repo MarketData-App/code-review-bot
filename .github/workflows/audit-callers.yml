@@ -20,8 +20,11 @@ name: Audit callers
 # A warning printed into a green run would reproduce the bug it is checking.
 on:
   schedule:
-    # 07:00 UTC daily, before the working day in every timezone the team uses.
-    - cron: "0 7 * * *"
+    # 07:00 UTC on Monday, before the working week starts in every timezone
+    # the team uses. Weekly, because the drift this catches is a rename or a
+    # deleted caller -- a human edit, not a background process -- and every
+    # merge here runs the audit as well.
+    - cron: "0 7 * * 1"
   # AND ON EVERY MERGE, because GitHub disables a SCHEDULED workflow after 60
   # days of repository inactivity -- which would switch this audit off in
   # exactly the silence it exists to detect.
@@ -153,3 +156,28 @@ jobs:
           # check failed for all six SDK repositories and the audit still
           # reported green.
           REVIEWBOT_BOT_TOKEN: ${{ steps.org.outputs.token }}
+
+      # SAY SO, LOUDLY. Email is the only other alert here, and the schedule
+      # is weekly -- a missed email is up to seven days of a repository not
+      # being reviewed while nothing says so. That is the silence this whole
+      # workflow exists to break, so the workflow must not fall into it.
+      #
+      # The same path support-agent, daily-standup and codex-keeper already
+      # use, with the organisation secret every private repository in
+      # MarketData-App already has. No new credential for the alarm: an alarm
+      # with its own secret is an alarm with its own way to fail.
+      #
+      # `if: failure()` rather than `always()`, and `|| true` at the end: the
+      # audit's own verdict stays the job's conclusion. A notifier that can
+      # fail the job would report a Slack outage as fleet drift.
+      - name: Say so, loudly
+        if: failure()
+        env:
+          SLACK_NOTIFY_TOKEN: ${{ secrets.SLACK_NOTIFY_TOKEN }}
+        run: |
+          curl -s -d "Audit callers FAILED. At least one target repository will no longer start a review, and it fails in silence -- every other check there stays green. The run log names the repository and the reason." \
+            -H "Authorization: Bearer ${SLACK_NOTIFY_TOKEN}" \
+            -H "X-workflow: ${GITHUB_WORKFLOW}" \
+            -H "X-repo: ${GITHUB_REPOSITORY}" \
+            -H "X-run_id: ${GITHUB_RUN_ID}" \
+            "https://notify.marketdata.app/slack/notify?type=ci_failure&channel=alerts" || true
