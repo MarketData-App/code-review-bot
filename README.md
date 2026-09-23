@@ -143,8 +143,11 @@ GITHUB_TOKEN=$(gh auth token) uv run reviewbot audit-callers MarketDataApp/sdk-p
 It exits non-zero when any repository will not start a review, and says why:
 a missing or commented-out `workflow_run`, a name matching no workflow, a
 workflow that does not run on pull requests, or a repository it could not
-read. `.github/workflows/audit-callers.yml` runs it over the whole fleet on a
-daily schedule and on every push to `main`.
+read. `.github/workflows/audit-callers.yml` runs it over the whole fleet every
+Monday at 07:00 UTC and on every push to `main`, and a failure posts to the
+`alerts` Slack channel through the organisation's `SLACK_NOTIFY_TOKEN`. The
+post cannot decide the run's verdict: a Slack outage must not turn a green
+fleet red, and a red run must not read as another outage.
 
 **One monitoring gap, accepted deliberately.** GitHub disables a scheduled
 workflow after 60 days with no activity in its repository, and a workflow

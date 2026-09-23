@@ -341,6 +341,52 @@ def test_the_second_audit_runs_even_when_the_first_fails(audit_workflow):
 # --- fixes from the bot's review of PR #21 ---------------------------------
 
 
+def _alarm_step(spec):
+    steps = spec["jobs"]["audit"]["steps"]
+    found = [s for s in steps if "notify.marketdata.app" in s.get("run", "")]
+    assert found, "the audit has no Slack alarm"
+    return found[0]
+
+
+def test_the_audit_tells_slack_when_it_fails(audit_workflow):
+    # Email is the only other alert, and the schedule is weekly -- so a missed
+    # email is up to seven days of a repository not being reviewed while
+    # nothing says so. An audit against silent failure cannot itself fail
+    # quietly.
+    alarm = _alarm_step(audit_workflow)
+    assert alarm.get("if") == "failure()"
+    assert alarm["env"]["SLACK_NOTIFY_TOKEN"] == "${{ secrets.SLACK_NOTIFY_TOKEN }}"
+
+
+def test_the_alarm_runs_after_both_audits(audit_workflow):
+    # The second audit carries `if: always()`, so it runs after the first
+    # fails. An alarm placed between them would fire while half the fleet is
+    # still unchecked, and report one repository as the whole answer.
+    steps = audit_workflow["jobs"]["audit"]["steps"]
+    audits = [
+        i
+        for i, s in enumerate(steps)
+        if s.get("run", "").strip().startswith("uv run reviewbot audit")
+    ]
+    assert steps.index(_alarm_step(audit_workflow)) > max(audits)
+
+
+def test_the_alarm_cannot_decide_the_jobs_verdict(audit_workflow):
+    # `|| true`, because the audit's own verdict is the answer. Without it a
+    # Slack outage turns a green fleet red, and the next red audit gets read
+    # as another outage.
+    assert _alarm_step(audit_workflow)["run"].rstrip().endswith("|| true")
+
+
+def test_the_alarm_keeps_the_token_out_of_the_url(audit_workflow):
+    # Older callers in the fleet pass `?token=...`. A query string lands in
+    # the run log, in any redirect and in the receiving proxy's access log;
+    # the header does not. New code uses the header.
+    run = _alarm_step(audit_workflow)["run"]
+    assert "Authorization: Bearer ${SLACK_NOTIFY_TOKEN}" in run
+    assert "token=" not in run
+
+
 def test_the_audit_never_runs_on_a_pull_request(audit_workflow):
     # c12ba7a7, and it was a real hole rather than a theoretical one. The job
     # mints installation tokens covering EVERY repository of each owner and
