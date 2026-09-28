@@ -138,3 +138,32 @@ def test_an_unknown_association_is_rejected():
 def test_the_association_list_may_not_be_empty():
     with pytest.raises(config.PolicyError):
         config.load("trusted_associations: []\n")
+
+
+def test_no_check_is_waited_for_by_default():
+    """A repository that lists nothing waits for nothing."""
+    policy = config.defaults()
+    assert policy["wait_for_checks"] == []
+    assert policy["wait_for_checks_seconds"] == 300
+
+
+def test_a_repository_lists_the_checks_to_wait_for():
+    """The names and the longest wait come from the repository's policy."""
+    policy = config.load(
+        'wait_for_checks: ["codecov/patch", "codecov/project"]\nwait_for_checks_seconds: 120\n'
+    )
+    assert policy["wait_for_checks"] == ["codecov/patch", "codecov/project"]
+    assert policy["wait_for_checks_seconds"] == 120
+
+
+@pytest.mark.parametrize("seconds", [-1, config.MAX_WAIT_FOR_CHECKS_SECONDS + 1])
+def test_the_wait_must_fit_the_job_budget(seconds):
+    """A negative wait, or one past the cap, is refused with the key's name."""
+    with pytest.raises(config.PolicyError, match="wait_for_checks_seconds"):
+        config.load(f"wait_for_checks_seconds: {seconds}\n")
+
+
+def test_the_checks_to_wait_for_are_names():
+    """Each listed check is a check-run name, so a string."""
+    with pytest.raises(config.PolicyError, match="wait_for_checks"):
+        config.load("wait_for_checks: [1]\n")

@@ -18,6 +18,12 @@ models:
 codex_reasoning_effort: high
 gate: true                     # check = failure on blocked, else success
 require_ci_green: true         # blocked while the head commit's CI is red
+# Checks another app reports after the CI workflows, by check-run name, such as
+# ["codecov/patch", "codecov/project"]. Nothing triggers a review when one of
+# them finishes, so once no GitHub Actions job is left running the review waits
+# for each of them to exist and finish, up to wait_for_checks_seconds.
+wait_for_checks: []
+wait_for_checks_seconds: 300   # 0 to 300
 proof:
   # WARNS, it does not block. The model still judges the evidence and still
   # asks for it under "Before merge"; what it no longer does is overwrite its

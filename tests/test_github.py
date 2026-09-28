@@ -176,6 +176,25 @@ def test_ci_state_is_success_when_everything_passed(api, transport):
     assert api.ci_state("abc", exclude_check_name="Code review") == "success"
 
 
+def test_check_runs_name_the_app_of_each_and_leave_out_our_own(api, transport):
+    """Each check run comes with the slug of the app that reports it."""
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
+        data={
+            "check_runs": [
+                {"name": "Tests", "status": "completed", "app": {"slug": "github-actions"}},
+                {"name": "codecov/project", "status": "in_progress", "app": {"slug": "codecov"}},
+                {"name": "Code review", "status": "completed", "app": {"slug": "marketdata"}},
+            ]
+        },
+    )
+    assert api.check_runs("abc", "Code review") == [
+        {"name": "Tests", "status": "completed", "app": "github-actions"},
+        {"name": "codecov/project", "status": "in_progress", "app": "codecov"},
+    ]
+
+
 def test_ci_state_is_none_without_any_check(api, transport):
     transport.add(
         "GET",

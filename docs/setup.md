@@ -200,7 +200,7 @@ the label in the Actions list.
 ### 4. Add a policy, if the defaults are not what you want
 
 `.github/code-review/policy.yml` on the **base** branch. Absent keys keep the
-defaults in `reviewbot/defaults/policy.yml`. Three choices actually matter:
+defaults in `reviewbot/defaults/policy.yml`. Four choices actually matter:
 
 **Which model reviews.** `backends` is a LIST, so naming it replaces the default
 wholesale rather than adding to it.
@@ -233,6 +233,25 @@ reported Blocked, and all three would have been. If you do turn it on, pair it
 with `proof.paths` — and know that it is an ANY-match over the whole pull
 request, so one matching file gates every file. On sdk-py,
 `paths: ["src/marketdata/**"]` fires on 7 of 7 open pull requests.
+
+**List the checks another app reports after CI.** Codecov, with its default
+`wait_for_ci`, reports only once every other check has finished, so its checks
+land after the `Tests` workflow that triggers the review. A review that reads CI
+in that gap either misses Codecov or finds it in progress and skips, and nothing
+triggers it again. Measured on sdk-py: Codecov reported 35 to 50 seconds after
+`Tests`, and the review read CI from 24 seconds before it to 8 seconds after.
+Name those checks, and the review waits for them before it reads CI:
+
+```yaml
+wait_for_checks: ["codecov/patch", "codecov/project"]
+wait_for_checks_seconds: 300   # the longest it waits, 0 to 300
+```
+
+The wait starts only once no GitHub Actions job is left running, so an earlier
+trigger still skips at once, and it runs before the Codex lease is borrowed. A
+listed check that never appears costs the whole wait, and then the review reads
+CI without it. Add the key only once the bot you call knows it: a policy with
+an unknown key fails the review.
 
 ### 5. Leave the check advisory until you trust it
 

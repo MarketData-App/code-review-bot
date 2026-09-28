@@ -34,6 +34,8 @@ _TOP_TYPES = {
     "codex_reasoning_effort": str,
     "gate": bool,
     "require_ci_green": bool,
+    "wait_for_checks": list,
+    "wait_for_checks_seconds": int,
     "proof": dict,
     "ratings": bool,
     "decision_packets": bool,
@@ -70,6 +72,8 @@ JOB_BUDGET_MINUTES = 90.0
 JOB_OVERHEAD_MINUTES = 10.0
 # 2 * MAX + overhead must fit the budget, leaving room for a lease wait.
 MAX_TIMEOUT_MINUTES = 30.0
+# The wait for listed checks comes out of the same budget, before the lease.
+MAX_WAIT_FOR_CHECKS_SECONDS = 300
 
 
 class PolicyError(ValueError):
@@ -175,12 +179,18 @@ def _validate(policy: dict) -> None:
             f"model time against a {JOB_BUDGET_MINUTES:g} minute job budget, and the job would be "
             f"killed mid-review"
         )
+    if not 0 <= policy["wait_for_checks_seconds"] <= MAX_WAIT_FOR_CHECKS_SECONDS:
+        raise PolicyError(
+            f"wait_for_checks_seconds must be from 0 to {MAX_WAIT_FOR_CHECKS_SECONDS}: the wait "
+            f"comes out of the {JOB_BUDGET_MINUTES:g} minute job budget"
+        )
     for key in (
         "ignore_paths",
         "ignore_authors",
         "auto_approve_paths",
         "trusted_associations",
         "trusted_authors",
+        "wait_for_checks",
     ):
         for item in policy[key]:
             if not isinstance(item, str):

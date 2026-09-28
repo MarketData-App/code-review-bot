@@ -178,6 +178,18 @@ def test_every_step_after_the_gate_is_conditional_on_it():
         assert "steps.gate.outputs.trusted == 'true'" in condition, item.get("name")
 
 
+def test_the_listed_checks_are_waited_for_before_the_lease_is_borrowed():
+    """The wait runs after the gate and before the shared lease is taken, so no
+    other repository's review waits on it."""
+    names = [(s.get("name") or "") for s in steps()]
+    wait_at = names.index("Wait for the checks the policy lists")
+    assert names.index("Check out the pull request head (read only)") < wait_at
+    assert wait_at < names.index("Borrow the Codex credential")
+    waiter = step("wait for the checks the policy lists")
+    assert "reviewbot wait-for-checks" in waiter["run"]
+    assert waiter["env"]["REVIEWBOT_FORCE"] == "${{ inputs.force }}"
+
+
 def test_the_gate_step_runs_the_tested_command():
     gate = step("refuse a pull request")
     assert "reviewbot gate" in gate["run"]

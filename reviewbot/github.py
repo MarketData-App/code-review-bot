@@ -415,6 +415,22 @@ class GitHub:
             )
         return out
 
+    def check_runs(self, sha: str, exclude_check_name: str) -> list[dict]:
+        """The name, status and app of every check run on a commit but our own."""
+        runs = (
+            self._request("GET", f"/repos/{self.repo}/commits/{sha}/check-runs?per_page=100").data
+            or {}
+        ).get("check_runs", [])
+        return [
+            {
+                "name": run.get("name") or "",
+                "status": run.get("status") or "",
+                "app": (run.get("app") or {}).get("slug") or "",
+            }
+            for run in runs
+            if run.get("name") != exclude_check_name
+        ]
+
     def ci_state(self, sha: str, exclude_check_name: str) -> str:
         """`success`, `failure`, `pending` or `none` for everything but our own check."""
         runs = (

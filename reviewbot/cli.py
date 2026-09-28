@@ -251,6 +251,71 @@ def _fail(api, sha: str, check_name: str, message: str) -> int:
     return 1
 
 
+WAIT_POLL_SECONDS = 10.0
+ACTIONS_APP = "github-actions"
+
+
+def wait_for_checks(
+    *,
+    repo: str,
+    token: str,
+    pr_number: int,
+    force: bool = False,
+    api=None,
+    sleep=_time.sleep,
+    clock=_time.monotonic,
+) -> int:
+    """Wait for the checks the policy lists in `wait_for_checks`, before the
+    review reads CI's state.
+
+    Returns at once while a GitHub Actions job is still running, because its
+    workflow triggers the review again when it finishes, and when the review is
+    forced or does not require green CI. Otherwise polls until every listed
+    check exists and has finished, or `wait_for_checks_seconds` have passed.
+    Whatever it cannot read, it leaves to `reviewbot run`. Always returns 0.
+    """
+    if force:
+        return 0
+    api = api or GitHub(repo, token)
+    try:
+        pull = api.pull_request(pr_number) or {}
+        base_ref = (pull.get("base") or {}).get("ref", "")
+        policy = config.load(api.file_at_ref(POLICY_PATH, base_ref or "HEAD"))
+    except (config.PolicyError, GitHubError) as exc:
+        print(f"reviewbot wait: {scrub(str(exc))}; the review decides without waiting")
+        return 0
+    listed = policy["wait_for_checks"]
+    if not listed or not policy["require_ci_green"]:
+        return 0
+    sha = (pull.get("head") or {}).get("sha", "")
+    seconds = policy["wait_for_checks_seconds"]
+    deadline = clock() + seconds
+    while True:
+        try:
+            runs = api.check_runs(sha, policy["check_name"])
+        except GitHubError as exc:
+            print(f"reviewbot wait: {scrub(str(exc))}; the review decides without waiting")
+            return 0
+        if any(run["app"] == ACTIONS_APP and run["status"] != "completed" for run in runs):
+            print(
+                "reviewbot wait: a GitHub Actions job is still running, and its workflow "
+                "triggers the review again when it finishes"
+            )
+            return 0
+        finished = {run["name"] for run in runs if run["status"] == "completed"}
+        missing = [name for name in listed if name not in finished]
+        if not missing:
+            print(f"reviewbot wait: {', '.join(listed)} finished")
+            return 0
+        if clock() >= deadline:
+            print(
+                f"reviewbot wait: {', '.join(missing)} did not finish within {seconds}s; "
+                "the review reads CI without them"
+            )
+            return 0
+        sleep(WAIT_POLL_SECONDS)
+
+
 def run(
     *,
     event: dict,
@@ -947,6 +1012,23 @@ def main(argv: list[str] | None = None) -> int:
         help="owner/name of the repository",
     )
 
+    waiter = sub.add_parser(
+        "wait-for-checks",
+        help="wait for the checks the policy lists before the review reads CI",
+    )
+    waiter.add_argument("--pr", type=int, required=True, help="pull request number")
+    waiter.add_argument(
+        "--repo",
+        default=os.environ.get("GITHUB_REPOSITORY"),
+        help="owner/name of the repository",
+    )
+    waiter.add_argument(
+        "--force",
+        action="store_true",
+        default=os.environ.get("REVIEWBOT_FORCE", "") == "true",
+        help="do not wait: a forced review does not gate on CI",
+    )
+
     deriver = sub.add_parser(
         "derive-credential", help="write the derived copy the review jobs borrow"
     )
@@ -1045,6 +1127,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.repo:
         parser.error("GITHUB_REPOSITORY is not set and --repo was not given")
+
+    if args.command == "wait-for-checks":
+        return wait_for_checks(repo=args.repo, token=token, pr_number=args.pr, force=args.force)
 
     event = {}
     if args.event and os.path.exists(args.event):
