@@ -234,11 +234,15 @@ def test_commits_asks_for_the_lease_path_on_the_lease_branch():
 
 
 def test_the_command_prints_a_report_for_the_store(monkeypatch, capsys):
+    """The command reports a ten-minute hold from a day ago, a date taken from
+    the clock because the command reads its window from the clock too."""
     from reviewbot import cli
 
+    start = dt.datetime.now(dt.UTC).replace(microsecond=0) - dt.timedelta(days=1)
+    stamp = "%Y-%m-%dT%H:%M:%SZ"
     history = [
-        freed("MarketData-App/api#1#r1-1", "2026-09-21T10:10:00Z"),
-        taken("MarketData-App/api#1#r1-1", "2026-09-21T10:00:00Z"),
+        freed("MarketData-App/api#1#r1-1", (start + dt.timedelta(minutes=10)).strftime(stamp)),
+        taken("MarketData-App/api#1#r1-1", start.strftime(stamp)),
     ]
 
     class FakeApi:
