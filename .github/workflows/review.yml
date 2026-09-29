@@ -261,6 +261,20 @@ jobs:
             --pr "${{ steps.pr.outputs.number }}" \
             --repo "$GITHUB_REPOSITORY"
 
+      # Before the head checkout, so a push during the wait is still fetched. It
+      # holds this runner but never the Codex lease, and `|| true` keeps it from
+      # failing the job.
+      - name: Wait for the checks the policy lists
+        if: steps.gate.outputs.trusted == 'true'
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          REVIEWBOT_FORCE: ${{ inputs.force }}
+        run: |
+          uv run --project bot reviewbot wait-for-checks \
+            --pr "${{ steps.pr.outputs.number }}" \
+            --repo "$GITHUB_REPOSITORY" || true
+
       - name: Check out the pull request head (read only)
         if: steps.gate.outputs.trusted == 'true'
         uses: actions/checkout@v7
@@ -273,21 +287,6 @@ jobs:
           # submodules: both would run code or fetch code from the PR.
           persist-credentials: false
           submodules: false
-
-      # A check another app reports after the CI workflows, such as Codecov,
-      # triggers nothing when it finishes, so a review that read CI before it
-      # did would skip with nothing to bring it back. The wait comes BEFORE the
-      # lease is borrowed, so no other repository waits on it.
-      - name: Wait for the checks the policy lists
-        if: steps.gate.outputs.trusted == 'true'
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          REVIEWBOT_FORCE: ${{ inputs.force }}
-        run: |
-          uv run --project bot reviewbot wait-for-checks \
-            --pr "${{ steps.pr.outputs.number }}" \
-            --repo "$GITHUB_REPOSITORY"
 
       # BORROWED, NOT STORED. The real credential never leaves skynet; what
       # lands here is a copy whose refresh token is a placeholder, so this job

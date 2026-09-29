@@ -176,23 +176,41 @@ def test_ci_state_is_success_when_everything_passed(api, transport):
     assert api.ci_state("abc", exclude_check_name="Code review") == "success"
 
 
-def test_check_runs_name_the_app_of_each_and_leave_out_our_own(api, transport):
-    """Each check run comes with the slug of the app that reports it."""
+def test_check_runs_give_the_status_and_conclusion_of_all_but_our_own(api, transport):
+    """Each check run comes with its status and conclusion; ours is left out."""
     transport.add(
         "GET",
         "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
         data={
             "check_runs": [
-                {"name": "Tests", "status": "completed", "app": {"slug": "github-actions"}},
-                {"name": "codecov/project", "status": "in_progress", "app": {"slug": "codecov"}},
-                {"name": "Code review", "status": "completed", "app": {"slug": "marketdata"}},
+                {"name": "Tests", "status": "completed", "conclusion": "failure"},
+                {"name": "codecov/project", "status": "in_progress", "conclusion": None},
+                {"name": "Code review", "status": "completed", "conclusion": "success"},
             ]
         },
     )
     assert api.check_runs("abc", "Code review") == [
-        {"name": "Tests", "status": "completed", "app": "github-actions"},
-        {"name": "codecov/project", "status": "in_progress", "app": "codecov"},
+        {"name": "Tests", "status": "completed", "conclusion": "failure"},
+        {"name": "codecov/project", "status": "in_progress", "conclusion": ""},
     ]
+
+
+def test_check_runs_read_every_page(api, transport):
+    """A commit with more than a page of check runs is read to the last one."""
+    matrix = [{"name": f"test ({n})", "status": "completed"} for n in range(100)]
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
+        data={"total_count": 101, "check_runs": matrix},
+    )
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100&page=2",
+        data={"total_count": 101, "check_runs": [{"name": "codecov/patch", "status": "queued"}]},
+    )
+    runs = api.check_runs("abc", "Code review")
+    assert len(runs) == 101
+    assert runs[-1] == {"name": "codecov/patch", "status": "queued", "conclusion": ""}
 
 
 def test_ci_state_is_none_without_any_check(api, transport):

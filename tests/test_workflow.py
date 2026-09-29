@@ -178,15 +178,23 @@ def test_every_step_after_the_gate_is_conditional_on_it():
         assert "steps.gate.outputs.trusted == 'true'" in condition, item.get("name")
 
 
-def test_the_listed_checks_are_waited_for_before_the_lease_is_borrowed():
-    """The wait runs after the gate and before the shared lease is taken, so no
-    other repository's review waits on it."""
+def test_the_listed_checks_are_waited_for_before_the_head_is_fetched():
+    """The wait runs after the gate, before the head is checked out, so a push
+    during the wait is fetched, and before the Codex lease is taken."""
     names = [(s.get("name") or "") for s in steps()]
     wait_at = names.index("Wait for the checks the policy lists")
-    assert names.index("Check out the pull request head (read only)") < wait_at
+    assert names.index("Refuse a pull request from outside the organisation") < wait_at
+    assert wait_at < names.index("Check out the pull request head (read only)")
     assert wait_at < names.index("Borrow the Codex credential")
+
+
+def test_the_wait_step_runs_the_tested_command_and_cannot_fail_the_job():
+    """The step reads with the repository's own App token, forwards `force`,
+    and a failure of the command never skips the review."""
     waiter = step("wait for the checks the policy lists")
     assert "reviewbot wait-for-checks" in waiter["run"]
+    assert waiter["run"].rstrip().endswith("|| true")
+    assert waiter["env"]["GITHUB_TOKEN"] == "${{ steps.app-token.outputs.token }}"
     assert waiter["env"]["REVIEWBOT_FORCE"] == "${{ inputs.force }}"
 
 

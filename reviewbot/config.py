@@ -136,6 +136,11 @@ def _check_type(key: str, value, expected: type) -> None:
 
 
 def _validate(policy: dict) -> None:
+    """Check a merged policy's types and values.
+
+    `policy` is the defaults with the repository's overrides applied. Returns
+    None; raises PolicyError naming the first key that is wrong.
+    """
     for key, expected in _TOP_TYPES.items():
         _check_type(key, policy[key], expected)
     for parent, table in _NESTED_TYPES.items():
@@ -198,3 +203,8 @@ def _validate(policy: dict) -> None:
     for item in policy["proof"]["paths"] + policy["auto_merge"]["authors"]:
         if not isinstance(item, str):
             raise PolicyError("proof.paths and auto_merge.authors must hold strings only")
+    if policy["check_name"] in policy["wait_for_checks"]:
+        raise PolicyError(
+            f"wait_for_checks may not list {policy['check_name']!r}, the review's own check, "
+            f"which the wait never sees"
+        )

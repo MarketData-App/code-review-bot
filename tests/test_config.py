@@ -167,3 +167,16 @@ def test_the_checks_to_wait_for_are_names():
     """Each listed check is a check-run name, so a string."""
     with pytest.raises(config.PolicyError, match="wait_for_checks"):
         config.load("wait_for_checks: [1]\n")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'wait_for_checks: ["Code review"]\n',
+        'check_name: "Review"\nwait_for_checks: ["codecov/patch", "Review"]\n',
+    ],
+)
+def test_the_review_cannot_wait_for_its_own_check(text):
+    """The wait never sees the review's own check, so listing it is refused."""
+    with pytest.raises(config.PolicyError, match="own check"):
+        config.load(text)

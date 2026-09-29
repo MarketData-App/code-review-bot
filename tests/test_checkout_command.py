@@ -13,7 +13,7 @@ import stat
 
 import pytest
 
-from reviewbot import cli, credentials, github
+from reviewbot import cli, config, credentials, github
 from tests.conftest import FakeTransport
 
 STORE = "MarketData-App/code-review-credentials"
@@ -758,6 +758,29 @@ def test_the_wait_never_outruns_the_job_budget():
     for cap in (5, 15, 30, 40):
         ttl, wait = cli._lease_minutes({"timeout_minutes": cap})
         assert wait + 2 * cap <= cli.JOB_BUDGET_MINUTES, f"cap={cap} ttl={ttl} wait={wait}"
+
+
+@pytest.mark.parametrize("cap", range(1, int(config.MAX_TIMEOUT_MINUTES) + 1))
+def test_the_lease_wait_leaves_room_for_the_wait_for_listed_checks(cap):
+    """Overhead, the wait for listed checks, the lease wait and two review
+    attempts all fit inside the job's timeout."""
+    policy = config.load(
+        f'timeout_minutes: {cap}\nwait_for_checks: ["codecov/patch"]\n'
+        f"wait_for_checks_seconds: {config.MAX_WAIT_FOR_CHECKS_SECONDS}\n"
+    )
+    _, wait = cli._lease_minutes(policy)
+    total = cli.JOB_OVERHEAD_MINUTES + config.MAX_WAIT_FOR_CHECKS_SECONDS / 60 + wait + 2 * cap
+    assert total <= cli.JOB_BUDGET_MINUTES, f"cap={cap} wait={wait}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", 'wait_for_checks: ["codecov/patch"]\nrequire_ci_green: false\n'],
+)
+def test_a_policy_that_does_not_wait_keeps_the_whole_lease_wait(text):
+    """No listed check, or no CI gate, means no wait to leave room for."""
+    policy = config.load("timeout_minutes: 20\n" + text)
+    assert cli._lease_minutes(policy) == cli._lease_minutes({"timeout_minutes": 20})
 
 
 def test_an_expired_issued_credential_is_not_borrowed(tmp_path, transport, capsys):

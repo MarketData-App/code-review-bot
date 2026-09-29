@@ -234,25 +234,24 @@ def test_commits_asks_for_the_lease_path_on_the_lease_branch():
 
 
 def test_the_command_prints_a_report_for_the_store(monkeypatch, capsys):
-    """The command reports a ten-minute hold from a day ago, a date taken from
-    the clock because the command reads its window from the clock too."""
+    """The command reports the one ten-minute hold in the week before `now`."""
     from reviewbot import cli
 
-    start = dt.datetime.now(dt.UTC).replace(microsecond=0) - dt.timedelta(days=1)
-    stamp = "%Y-%m-%dT%H:%M:%SZ"
     history = [
-        freed("MarketData-App/api#1#r1-1", (start + dt.timedelta(minutes=10)).strftime(stamp)),
-        taken("MarketData-App/api#1#r1-1", start.strftime(stamp)),
+        freed("MarketData-App/api#1#r1-1", "2026-09-21T10:10:00Z"),
+        taken("MarketData-App/api#1#r1-1", "2026-09-21T10:00:00Z"),
     ]
 
     class FakeApi:
         def commits(self, path, branch, since):
+            """The scripted history, once the lease file and branch are checked."""
             assert path == credentials.LEASE_PATH
             assert branch == credentials.LEASE_BRANCH
             return history
 
     monkeypatch.setattr(cli, "_store_api", lambda repo, token: FakeApi())
-    assert cli.lease_report(API, days=7, token="t") == 0
+    now = dt.datetime(2026, 9, 22, tzinfo=dt.UTC)
+    assert cli.lease_report(API, days=7, token="t", now=now) == 0
     out = capsys.readouterr().out
     assert "1 hold" in out and "1 holds" not in out
     assert "0h 10m" in out

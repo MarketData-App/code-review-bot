@@ -416,16 +416,27 @@ class GitHub:
         return out
 
     def check_runs(self, sha: str, exclude_check_name: str) -> list[dict]:
-        """The name, status and app of every check run on a commit but our own."""
-        runs = (
-            self._request("GET", f"/repos/{self.repo}/commits/{sha}/check-runs?per_page=100").data
-            or {}
-        ).get("check_runs", [])
+        """The name, status and conclusion of every check run on a commit.
+
+        `sha` is the commit and `exclude_check_name` the bot's own check, which
+        is left out. Every page of the listing is read. Raises GitHubError, or
+        the transport's own error, when a page cannot be read.
+        """
+        path = f"/repos/{self.repo}/commits/{sha}/check-runs?per_page=100"
+        runs, page = [], 1
+        while True:
+            reply = self._request("GET", path if page == 1 else f"{path}&page={page}").data
+            found = reply.get("check_runs") if isinstance(reply, dict) else None
+            found = found if isinstance(found, list) else []
+            runs.extend(run for run in found if isinstance(run, dict))
+            if len(found) < 100:
+                break
+            page += 1
         return [
             {
                 "name": run.get("name") or "",
                 "status": run.get("status") or "",
-                "app": (run.get("app") or {}).get("slug") or "",
+                "conclusion": run.get("conclusion") or "",
             }
             for run in runs
             if run.get("name") != exclude_check_name
