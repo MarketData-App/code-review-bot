@@ -970,7 +970,11 @@ def credential_checkin(store: str, holder: str, codex_home: str, token: str) -> 
 
 
 def main(argv: list[str] | None = None) -> int:
-    """`reviewbot run --event <path> [--pr N]`."""
+    """Parse the command line and run one `reviewbot` subcommand.
+
+    `argv` holds the arguments, `sys.argv[1:]` when None. Returns the process
+    exit code; raises SystemExit on a usage error.
+    """
     parser = argparse.ArgumentParser(prog="reviewbot")
     sub = parser.add_subparsers(dest="command", required=True)
     runner = sub.add_parser("run", help="review one pull request")
