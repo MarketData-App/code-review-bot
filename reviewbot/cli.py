@@ -20,7 +20,7 @@ from reviewbot import policy as policy_mod
 from reviewbot import result as result_mod
 from reviewbot.backends import base as backends
 from reviewbot.config import JOB_BUDGET_MINUTES, JOB_OVERHEAD_MINUTES
-from reviewbot.github import GitHub, GitHubError
+from reviewbot.github import FAILED_CONCLUSIONS, GitHub, GitHubError
 from reviewbot.redact import scrub
 
 CONFIG_DIR = ".github/code-review"
@@ -252,7 +252,6 @@ def _fail(api, sha: str, check_name: str, message: str) -> int:
 
 
 WAIT_POLL_SECONDS = 10.0
-RED_CONCLUSIONS = ("failure", "timed_out", "action_required")
 
 
 def wait_for_checks(
@@ -267,7 +266,8 @@ def wait_for_checks(
 ) -> int:
     """Wait until every check the base-branch policy lists in `wait_for_checks`
     exists and no check run is still running, for at most
-    `wait_for_checks_seconds`.
+    `wait_for_checks_seconds`, and write the commit it polled as the step
+    output `head`.
 
     `repo`, `token` and `pr_number` name the pull request, `force` skips the
     wait, and `api`, `sleep` and `clock` replace the GitHub client, the sleep
@@ -277,46 +277,51 @@ def wait_for_checks(
     if force:
         return 0
     try:
-        _wait_for_listed_checks(api or GitHub(repo, token), pr_number, sleep, clock)
+        head = _wait_for_listed_checks(api or GitHub(repo, token), pr_number, sleep, clock)
     except (config.PolicyError, GitHubError) as exc:
         print(f"reviewbot wait: {scrub(str(exc))}; the review decides without waiting")
+        return 0
     except Exception as exc:  # noqa: BLE001 - the wait must never fail the review
         print(
             f"reviewbot wait: {type(exc).__name__}: {scrub(str(exc))}; "
             "the review decides without waiting"
         )
+        return 0
+    if head:
+        _say_output("head", head)
     return 0
 
 
-def _wait_for_listed_checks(api, pr_number: int, sleep, clock) -> None:
+def _wait_for_listed_checks(api, pr_number: int, sleep, clock) -> str:
     """Poll the head commit's check runs until the listed checks and everything
     else have finished, CI is red, or the policy's seconds have passed.
 
     `api` is the GitHub client, `pr_number` the pull request, and `sleep` and
-    `clock` the sleep and the monotonic clock. Returns None; raises
-    `config.PolicyError` for a malformed policy, and `GitHubError` or the
-    transport's own error for a failed read.
+    `clock` the sleep and the monotonic clock. Returns the commit it polled, or
+    "" when the policy asks for no wait; raises `config.PolicyError` for a
+    malformed policy, and `GitHubError` or the transport's own error for a
+    failed read.
     """
     pull = api.pull_request(pr_number) or {}
     base_ref = (pull.get("base") or {}).get("ref", "")
     policy = config.load(api.file_at_ref(POLICY_PATH, base_ref or "HEAD"))
     listed = policy["wait_for_checks"]
     if not listed or not policy["require_ci_green"]:
-        return
+        return ""
     sha = (pull.get("head") or {}).get("sha", "")
     seconds = policy["wait_for_checks_seconds"]
     deadline = clock() + seconds
     while True:
         runs = api.check_runs(sha, policy["check_name"])
-        if any(run["conclusion"] in RED_CONCLUSIONS for run in runs):
+        if any(run["conclusion"] in FAILED_CONCLUSIONS for run in runs):
             print("reviewbot wait: CI is already red on the head commit; nothing to wait for")
-            return
+            return sha
         present = {run["name"] for run in runs}
         missing = [name for name in listed if name not in present]
         running = sorted({run["name"] for run in runs if run["status"] != "completed"})
         if not missing and not running:
             print(f"reviewbot wait: {', '.join(listed)} finished")
-            return
+            return sha
         left = deadline - clock()
         if left <= 0:
             if running:
@@ -329,7 +334,7 @@ def _wait_for_listed_checks(api, pr_number: int, sleep, clock) -> None:
                     f"reviewbot wait: {', '.join(missing)} did not appear within {seconds}s; "
                     "the review reads CI without them"
                 )
-            return
+            return sha
         sleep(min(WAIT_POLL_SECONDS, left))
 
 
@@ -343,8 +348,18 @@ def run(
     api=None,
     org_api=None,
     force: bool = False,
+    waited_head: str = "",
 ) -> int:
-    """One whole review. Returns the process exit code."""
+    """Review one pull request and publish the result.
+
+    `event` is the triggering payload, `repo` and `token` name the repository
+    and its App token, `checkout` is the read-only checkout of the head, and
+    `pr_number` names the pull request when the event does not. `api` and
+    `org_api` replace the repository and organisation clients, `force` reviews
+    an already reviewed or unfinished head, and `waited_head` is the commit
+    `wait-for-checks` polled, which the head must still be. Returns the process
+    exit code, 1 when the bot itself failed; an unexpected error propagates.
+    """
     api = api or GitHub(repo, token)
     number = _resolve_pr(event, api, pr_number)
     if number is None:
@@ -413,6 +428,13 @@ def run(
             f"when they see different evidence: check that the `Run the review` "
             f"step passes REVIEWBOT_ORG_TOKEN.",
         )
+
+    if waited_head and pr.head_sha != waited_head:
+        print(
+            f"reviewbot: skipped, the head moved from {waited_head[:7]} to {pr.head_sha[:7]} "
+            "after the wait; its own CI triggers the review that waits for it"
+        )
+        return 0
 
     skip = policy_mod.should_skip(pr, policy, force=force)
     if skip:
@@ -1169,6 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
             pr_number=args.pr,
             org_api=GitHub(args.repo, org_token) if org_token else None,
             force=args.force,
+            waited_head=os.environ.get("REVIEWBOT_WAITED_HEAD", ""),
         )
     except Exception:  # the job must fail loudly, never silently
         traceback.print_exc()

@@ -254,8 +254,10 @@ It ends once every listed check exists and no check run on the head is still
 running, from any app, so the earlier of two trigger workflows waits too: a
 repository that borrows the Codex lease still reviews once, because the later
 run finds the head reviewed, and any other may review twice. It ends early when
-CI is already red. It holds the job's runner, which on the self-hosted runner
-other repositories share, but never the Codex lease.
+CI is already red, by the rule the review itself applies. If the pull request
+moves to a new head during the wait, this run skips: the new head's own CI
+triggers a review that waits for it. The wait holds the job's runner, which on
+the self-hosted runner other repositories share, but never the Codex lease.
 
 A listed check that fails makes the review skip, like any red check: list
 `codecov/patch` only if patch coverage should hold back the review, and

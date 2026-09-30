@@ -10,6 +10,7 @@ Run: pytest tests/test_wait_for_checks.py
 
 import base64
 
+import pytest
 import requests
 
 from reviewbot import cli, github
@@ -171,10 +172,13 @@ def test_an_unrelated_actions_workflow_still_running_keeps_the_wait_going(capsys
     assert "codecov/patch, codecov/project finished" in capsys.readouterr().out
 
 
-def test_red_ci_ends_the_wait_at_once(capsys):
-    """A failed check makes the review skip whatever else reports, so there is
-    nothing to wait for."""
-    api = FakeGitHub(LISTED, [[actions(conclusion="failure", name="Lint"), actions("in_progress")]])
+@pytest.mark.parametrize("conclusion", github.FAILED_CONCLUSIONS)
+def test_red_ci_ends_the_wait_at_once(capsys, conclusion):
+    """A check the review counts as red makes it skip whatever else reports, so
+    there is nothing to wait for."""
+    api = FakeGitHub(
+        LISTED, [[actions(conclusion=conclusion, name="Lint"), actions("in_progress")]]
+    )
     clock = FakeClock()
 
     assert wait(api, clock) == 0
@@ -182,6 +186,37 @@ def test_red_ci_ends_the_wait_at_once(capsys):
     assert api.seen == 1
     assert clock.slept == []
     assert "CI is already red" in capsys.readouterr().out
+
+
+def test_the_wait_names_the_head_it_polled(tmp_path, monkeypatch):
+    """The polled commit becomes the step output `head`, which pins the review."""
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    api = FakeGitHub(LISTED, [[actions(), *BOTH]])
+
+    assert wait(api, FakeClock()) == 0
+
+    assert output.read_text() == "head=abc\n"
+
+
+@pytest.mark.parametrize(
+    ("policy", "force", "reads"),
+    [
+        ("", False, [[actions()]]),
+        (LISTED, True, [[actions()]]),
+        (LISTED + "require_ci_green: false\n", False, [[actions()]]),
+        ("wait_for_checks: [1]\n", False, [[actions()]]),
+        (LISTED, False, [GitHubError("GET check-runs: 502")]),
+    ],
+)
+def test_no_head_is_named_when_nothing_was_waited_for(tmp_path, monkeypatch, policy, force, reads):
+    """Without a wait there is nothing to pin, so the review runs as before."""
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    assert wait(FakeGitHub(policy, reads), FakeClock(), force=force) == 0
+
+    assert not output.exists()
 
 
 def test_it_gives_up_after_the_policy_seconds(capsys):

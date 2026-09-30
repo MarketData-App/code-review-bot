@@ -21,6 +21,9 @@ ANNOTATION_LIMIT = 50
 RETRY_STATUSES = (403, 429, 500, 502, 503, 504)
 MAX_ATTEMPTS = 5
 
+# The check-run conclusions that make CI red.
+FAILED_CONCLUSIONS = ("failure", "timed_out", "action_required")
+
 # GitHub's own words for "this account can act on the repository".
 MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
@@ -443,7 +446,12 @@ class GitHub:
         ]
 
     def ci_state(self, sha: str, exclude_check_name: str) -> str:
-        """`success`, `failure`, `pending` or `none` for everything but our own check."""
+        """The CI state of a commit: `success`, `failure`, `pending` or `none`.
+
+        `sha` is the commit and `exclude_check_name` the bot's own check, which
+        is left out. Returns the state; raises GitHubError, or the transport's
+        own error, when the check runs cannot be read.
+        """
         runs = (
             self._request("GET", f"/repos/{self.repo}/commits/{sha}/check-runs?per_page=100").data
             or {}
@@ -470,9 +478,7 @@ class GitHub:
         except GitHubError:
             legacy = None
 
-        failed = any(
-            r.get("conclusion") in ("failure", "timed_out", "action_required") for r in runs
-        )
+        failed = any(r.get("conclusion") in FAILED_CONCLUSIONS for r in runs)
         running = any(r.get("status") != "completed" for r in runs)
         if failed or legacy == "failure":
             return "failure"
