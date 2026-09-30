@@ -418,12 +418,12 @@ class GitHub:
             )
         return out
 
-    def check_runs(self, sha: str, exclude_check_name: str) -> list[dict]:
-        """The name, status and conclusion of every check run on a commit.
+    def _every_check_run(self, sha: str, exclude_check_name: str) -> list[dict]:
+        """Every check run on a commit as GitHub returns it, across every page.
 
         `sha` is the commit and `exclude_check_name` the bot's own check, which
-        is left out. Every page of the listing is read. Raises GitHubError, or
-        the transport's own error, when a page cannot be read.
+        is left out. Returns the check-run objects; raises GitHubError, or the
+        transport's own error, when a page cannot be read.
         """
         path = f"/repos/{self.repo}/commits/{sha}/check-runs?per_page=100"
         runs, page = [], 1
@@ -433,30 +433,34 @@ class GitHub:
             found = found if isinstance(found, list) else []
             runs.extend(run for run in found if isinstance(run, dict))
             if len(found) < 100:
-                break
+                return [run for run in runs if run.get("name") != exclude_check_name]
             page += 1
+
+    def check_runs(self, sha: str, exclude_check_name: str) -> list[dict]:
+        """The name, status and conclusion of every check run on a commit.
+
+        `sha` is the commit and `exclude_check_name` the bot's own check, which
+        is left out. Every page of the listing is read. Raises GitHubError, or
+        the transport's own error, when a page cannot be read.
+        """
         return [
             {
                 "name": run.get("name") or "",
                 "status": run.get("status") or "",
                 "conclusion": run.get("conclusion") or "",
             }
-            for run in runs
-            if run.get("name") != exclude_check_name
+            for run in self._every_check_run(sha, exclude_check_name)
         ]
 
     def ci_state(self, sha: str, exclude_check_name: str) -> str:
         """The CI state of a commit: `success`, `failure`, `pending` or `none`.
 
         `sha` is the commit and `exclude_check_name` the bot's own check, which
-        is left out. Returns the state; raises GitHubError, or the transport's
-        own error, when the check runs cannot be read.
+        is left out. Every page of the check runs is read. Returns the state;
+        raises GitHubError, or the transport's own error, when the check runs
+        cannot be read.
         """
-        runs = (
-            self._request("GET", f"/repos/{self.repo}/commits/{sha}/check-runs?per_page=100").data
-            or {}
-        ).get("check_runs", [])
-        runs = [r for r in runs if r.get("name") != exclude_check_name]
+        runs = self._every_check_run(sha, exclude_check_name)
         # The combined-status endpoint is the older API, and reading it needs
         # the App's `statuses` permission, which we deliberately do not have.
         # It is an optional signal: Actions and most modern CI report as check

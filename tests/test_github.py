@@ -176,6 +176,31 @@ def test_ci_state_is_success_when_everything_passed(api, transport):
     assert api.ci_state("abc", exclude_check_name="Code review") == "success"
 
 
+def test_ci_state_sees_a_failure_on_a_later_page(api, transport):
+    """The review reads every page, as the wait does, so a failure past the
+    first hundred check runs still makes CI red."""
+    passed = [
+        {"name": f"test ({n})", "status": "completed", "conclusion": "success"} for n in range(100)
+    ]
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
+        data={"total_count": 101, "check_runs": passed},
+    )
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100&page=2",
+        data={
+            "total_count": 101,
+            "check_runs": [
+                {"name": "codecov/patch", "status": "completed", "conclusion": "failure"}
+            ],
+        },
+    )
+    transport.add("GET", "/repos/MarketData-App/api/commits/abc/status", data={"state": "success"})
+    assert api.ci_state("abc", exclude_check_name="Code review") == "failure"
+
+
 def test_check_runs_give_the_status_and_conclusion_of_all_but_our_own(api, transport):
     """Each check run comes with its status and conclusion; ours is left out."""
     transport.add(
