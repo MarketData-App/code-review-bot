@@ -18,6 +18,12 @@ models:
 codex_reasoning_effort: high
 gate: true                     # check = failure on blocked, else success
 require_ci_green: true         # blocked while the head commit's CI is red
+# Checks another app reports after CI, by check-run name, such as
+# ["codecov/patch", "codecov/project"]. With require_ci_green on, the review
+# waits up to wait_for_checks_seconds for each to exist and for every check run
+# to finish. A listed check that fails skips the review, like any red check.
+wait_for_checks: []
+wait_for_checks_seconds: 300   # 0 to 300
 proof:
   # WARNS, it does not block. The model still judges the evidence and still
   # asks for it under "Before merge"; what it no longer does is overwrite its

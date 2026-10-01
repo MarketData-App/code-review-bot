@@ -154,8 +154,9 @@ Its comments carry four things that each cost a failed run:
   and the run reports success while doing nothing.
 - **Name every CI workflow** in `workflow_run.workflows`, by its `name:` and not
   its filename. The gate looks at every check on the commit, so whichever
-  finishes last is the one whose review proceeds. Earlier triggers skip cheaply;
-  a repeat on the same head skips too. Extra triggers are self-deduplicating.
+  finishes last is the one whose review proceeds. Earlier triggers skip cheaply,
+  or wait under `wait_for_checks` (section 4); a repeat on the same head skips
+  too. Extra triggers are self-deduplicating.
 - **Only review pull requests.** `workflow_run` fires for default-branch pushes
   as well, because CI runs there too. Without
   `github.event.workflow_run.event == 'pull_request'`, every merge starts a job
@@ -200,7 +201,7 @@ the label in the Actions list.
 ### 4. Add a policy, if the defaults are not what you want
 
 `.github/code-review/policy.yml` on the **base** branch. Absent keys keep the
-defaults in `reviewbot/defaults/policy.yml`. Three choices actually matter:
+defaults in `reviewbot/defaults/policy.yml`. Four choices actually matter:
 
 **Which model reviews.** `backends` is a LIST, so naming it replaces the default
 wholesale rather than adding to it.
@@ -233,6 +234,36 @@ reported Blocked, and all three would have been. If you do turn it on, pair it
 with `proof.paths` — and know that it is an ANY-match over the whole pull
 request, so one matching file gates every file. On sdk-py,
 `paths: ["src/marketdata/**"]` fires on 7 of 7 open pull requests.
+
+**List the checks another app reports after CI.** Codecov, with its default
+`wait_for_ci`, reports only once every other check has finished, so its checks
+land after the `Tests` workflow that triggers the review. A review that reads CI
+in that gap either misses Codecov or finds it in progress and skips, and nothing
+triggers it again. Measured on sdk-py: Codecov reported 35 to 50 seconds after
+`Tests`, and the review read CI from 24 seconds before it to 8 seconds after.
+Name those checks by their check-run names, and the review waits for them
+before it reads CI:
+
+```yaml
+wait_for_checks: ["codecov/patch", "codecov/project"]
+wait_for_checks_seconds: 300   # the longest it waits, 0 to 300
+```
+
+The wait runs only while `require_ci_green` is on, and not for a forced review.
+It ends once every listed check exists and no check run on the head is still
+running, from any app, so the earlier of two trigger workflows waits too: a
+repository that borrows the Codex lease still reviews once, because the later
+run finds the head reviewed, and any other may review twice. It ends early when
+CI is already red, by the rule the review itself applies. If the pull request
+moves to a new head during the wait, this run skips: the new head's own CI
+triggers a review that waits for it. The wait holds the job's runner, which on
+the self-hosted runner other repositories share, but never the Codex lease.
+
+A listed check that fails makes the review skip, like any red check: list
+`codecov/patch` only if patch coverage should hold back the review, and
+`codecov/project` alone otherwise. A listed check that never appears costs the
+whole wait, and then the review reads CI without it. Add the key only once the
+bot you call knows it: a policy with an unknown key fails the review.
 
 ### 5. Leave the check advisory until you trust it
 

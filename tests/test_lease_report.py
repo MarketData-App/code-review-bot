@@ -234,6 +234,7 @@ def test_commits_asks_for_the_lease_path_on_the_lease_branch():
 
 
 def test_the_command_prints_a_report_for_the_store(monkeypatch, capsys):
+    """The command reports the one ten-minute hold in the week before `now`."""
     from reviewbot import cli
 
     history = [
@@ -243,12 +244,14 @@ def test_the_command_prints_a_report_for_the_store(monkeypatch, capsys):
 
     class FakeApi:
         def commits(self, path, branch, since):
+            """The scripted history, once the lease file and branch are checked."""
             assert path == credentials.LEASE_PATH
             assert branch == credentials.LEASE_BRANCH
             return history
 
     monkeypatch.setattr(cli, "_store_api", lambda repo, token: FakeApi())
-    assert cli.lease_report(API, days=7, token="t") == 0
+    now = dt.datetime(2026, 9, 22, tzinfo=dt.UTC)
+    assert cli.lease_report(API, days=7, token="t", now=now) == 0
     out = capsys.readouterr().out
     assert "1 hold" in out and "1 holds" not in out
     assert "0h 10m" in out

@@ -20,7 +20,7 @@ from reviewbot import policy as policy_mod
 from reviewbot import result as result_mod
 from reviewbot.backends import base as backends
 from reviewbot.config import JOB_BUDGET_MINUTES, JOB_OVERHEAD_MINUTES
-from reviewbot.github import GitHub, GitHubError
+from reviewbot.github import FAILED_CONCLUSIONS, GitHub, GitHubError
 from reviewbot.redact import scrub
 
 CONFIG_DIR = ".github/code-review"
@@ -251,6 +251,93 @@ def _fail(api, sha: str, check_name: str, message: str) -> int:
     return 1
 
 
+WAIT_POLL_SECONDS = 10.0
+
+
+def wait_for_checks(
+    *,
+    repo: str,
+    token: str,
+    pr_number: int,
+    force: bool = False,
+    api=None,
+    sleep=_time.sleep,
+    clock=_time.monotonic,
+) -> int:
+    """Wait until every check the base-branch policy lists in `wait_for_checks`
+    exists and no check run is still running, for at most
+    `wait_for_checks_seconds`, and write the commit it polled as the step
+    output `head`.
+
+    `repo`, `token` and `pr_number` name the pull request, `force` skips the
+    wait, and `api`, `sleep` and `clock` replace the GitHub client, the sleep
+    and the monotonic clock. Returns 0 and raises nothing: what it cannot read,
+    and whether to review at all, it leaves to `reviewbot run`.
+    """
+    if force:
+        return 0
+    try:
+        head = _wait_for_listed_checks(api or GitHub(repo, token), pr_number, sleep, clock)
+    except (config.PolicyError, GitHubError) as exc:
+        print(f"reviewbot wait: {scrub(str(exc))}; the review decides without waiting")
+        return 0
+    except Exception as exc:  # noqa: BLE001 - the wait must never fail the review
+        print(
+            f"reviewbot wait: {type(exc).__name__}: {scrub(str(exc))}; "
+            "the review decides without waiting"
+        )
+        return 0
+    if head:
+        _say_output("head", head)
+    return 0
+
+
+def _wait_for_listed_checks(api, pr_number: int, sleep, clock) -> str:
+    """Poll the head commit's check runs until the listed checks and everything
+    else have finished, CI is red, or the policy's seconds have passed.
+
+    `api` is the GitHub client, `pr_number` the pull request, and `sleep` and
+    `clock` the sleep and the monotonic clock. Returns the commit it polled, or
+    "" when the policy asks for no wait; raises `config.PolicyError` for a
+    malformed policy, and `GitHubError` or the transport's own error for a
+    failed read.
+    """
+    pull = api.pull_request(pr_number) or {}
+    base_ref = (pull.get("base") or {}).get("ref", "")
+    policy = config.load(api.file_at_ref(POLICY_PATH, base_ref or "HEAD"))
+    listed = policy["wait_for_checks"]
+    if not listed or not policy["require_ci_green"]:
+        return ""
+    sha = (pull.get("head") or {}).get("sha", "")
+    seconds = policy["wait_for_checks_seconds"]
+    deadline = clock() + seconds
+    while True:
+        runs = api.check_runs(sha, policy["check_name"])
+        if any(run["conclusion"] in FAILED_CONCLUSIONS for run in runs):
+            print("reviewbot wait: CI is already red on the head commit; nothing to wait for")
+            return sha
+        present = {run["name"] for run in runs}
+        missing = [name for name in listed if name not in present]
+        running = sorted({run["name"] for run in runs if run["status"] != "completed"})
+        if not missing and not running:
+            print(f"reviewbot wait: {', '.join(listed)} finished")
+            return sha
+        left = deadline - clock()
+        if left <= 0:
+            if running:
+                print(
+                    f"reviewbot wait: {', '.join(running)} still running after {seconds}s; "
+                    "the review skips while CI is unfinished"
+                )
+            else:
+                print(
+                    f"reviewbot wait: {', '.join(missing)} did not appear within {seconds}s; "
+                    "the review reads CI without them"
+                )
+            return sha
+        sleep(min(WAIT_POLL_SECONDS, left))
+
+
 def run(
     *,
     event: dict,
@@ -261,8 +348,18 @@ def run(
     api=None,
     org_api=None,
     force: bool = False,
+    waited_head: str = "",
 ) -> int:
-    """One whole review. Returns the process exit code."""
+    """Review one pull request and publish the result.
+
+    `event` is the triggering payload, `repo` and `token` name the repository
+    and its App token, `checkout` is the read-only checkout of the head, and
+    `pr_number` names the pull request when the event does not. `api` and
+    `org_api` replace the repository and organisation clients, `force` reviews
+    an already reviewed or unfinished head, and `waited_head` is the commit
+    `wait-for-checks` polled, which the head must still be. Returns the process
+    exit code, 1 when the bot itself failed; an unexpected error propagates.
+    """
     api = api or GitHub(repo, token)
     number = _resolve_pr(event, api, pr_number)
     if number is None:
@@ -331,6 +428,13 @@ def run(
             f"when they see different evidence: check that the `Run the review` "
             f"step passes REVIEWBOT_ORG_TOKEN.",
         )
+
+    if waited_head and pr.head_sha != waited_head:
+        print(
+            f"reviewbot: skipped, the head moved from {waited_head[:7]} to {pr.head_sha[:7]} "
+            "after the wait; its own CI triggers the review that waits for it"
+        )
+        return 0
 
     skip = policy_mod.should_skip(pr, policy, force=force)
     if skip:
@@ -572,36 +676,23 @@ def _will_run_codex(policy: dict | None) -> bool:
 
 
 def _lease_minutes(policy: dict | None) -> tuple[float, float]:
-    """(ttl, wait), both sized from the policy rather than guessed.
+    """The Codex lease's TTL and how long to wait for it, both in minutes.
 
-    A backend review is `for attempt in (1, 2)` around a call bounded by
-    `timeout_minutes`, so ONE backend can legitimately run for twice that. A
-    TTL shorter than the work it protects is worse than no TTL: it expires
-    under a job that is still working and hands the credential to a second one.
-
-    So ttl covers the worst case with a margin, and the wait exceeds the ttl --
-    that ordering is what lets a waiter outlast a holder that died without
-    checking in, instead of giving up just before the lease frees itself.
+    `policy` is the target repository's policy, or None when it could not be
+    read. The TTL covers a review's two attempts of `timeout_minutes` each, and
+    the wait outlasts the TTL unless the job budget, which must also hold the
+    overhead and the wait for listed checks, has no room for that. Returns
+    `(ttl, wait)`; raises nothing.
     """
-    cap = float((policy or {}).get("timeout_minutes") or 15)
+    policy = policy or {}
+    cap = float(policy.get("timeout_minutes") or 15)
     ttl = 2 * cap + 5
     wait = ttl + 5
-    # The wait must also fit INSIDE the job's own budget alongside the review
-    # it is waiting to run. `JOB_BUDGET_MINUTES` mirrors review.yml's
-    # timeout-minutes; a policy with a large timeout_minutes would otherwise
-    # size a wait that the runner kills mid-queue, which looks like a failed
-    # review rather than a busy one.
-    # THE TWO GOALS CONFLICT ABOVE A CERTAIN timeout_minutes, and the arithmetic
-    # is worth writing down rather than rediscovering. We want
-    #   ttl  > 2*cap                 (outlast the work it protects)
-    #   wait > ttl                   (outlast a dead holder's lease)
-    #   wait + 2*cap + overhead <= budget   (fit inside the job)
-    # Substituting gives 2*cap < 80 - 2*cap, i.e. cap < 20 for a 90 minute
-    # budget. Beyond that, fitting the job wins: a wait the runner kills
-    # mid-queue looks like a failed review, while a wait shorter than the TTL
-    # only means a job can give up while a DEAD holder's lease is still
-    # ticking -- rare, and it degrades to a Claude review rather than a red one.
-    room = JOB_BUDGET_MINUTES - (2 * cap) - JOB_OVERHEAD_MINUTES
+    checks = 0.0
+    if policy.get("wait_for_checks") and policy.get("require_ci_green", True):
+        checks = policy.get("wait_for_checks_seconds", 0) / 60
+    # Fitting the job budget wins over outlasting a dead holder's TTL.
+    room = JOB_BUDGET_MINUTES - (2 * cap) - JOB_OVERHEAD_MINUTES - checks
     return ttl, max(0.0, min(wait, room))
 
 
@@ -846,27 +937,21 @@ def _positive_days(text: str) -> int:
     return value
 
 
-def lease_report(store: str, days: int, token: str) -> int:
-    """Print who held the shared Codex credential, and for how long.
+def lease_report(store: str, days: int, token: str, now=None) -> int:
+    """Print who held the shared Codex credential in the last `days` days, and
+    for how long, from the store's commit history.
 
-    UNLIKE the credential commands, this one is allowed to fail. It reviews
-    nothing: a person runs it to answer "is the shared plan the bottleneck?",
-    and a report that silently prints an empty week would answer it wrongly.
-
-    It reads the store's commit history, which records every HOLD. It cannot
-    count a run that WAITED -- a blocked job writes no commit -- and the report
-    it prints says so rather than leaving a reader to assume otherwise.
+    `store` is the credential store repository, `token` reads it, and `now` is
+    the end of the window, the current UTC time when None. Returns 0, or 1 when
+    the store answers with an error; a transport error propagates.
     """
     import datetime as _dt
 
     from reviewbot import credentials
 
-    now = _dt.datetime.now(_dt.UTC)
+    now = now or _dt.datetime.now(_dt.UTC)
     try:
-        # MARGIN, not the window itself: a hold that began before the window
-        # and ended inside it arrives as a lone `lease freed` that pairs with
-        # nothing, so both the hold and its in-window time disappear.
-        # `credentials.lease_report` clips what this returns back to the window.
+        # The margin lets a hold that began before the window pair with its release.
         history = _store_api(store, token).commits(
             credentials.LEASE_PATH,
             credentials.LEASE_BRANCH,
@@ -907,7 +992,11 @@ def credential_checkin(store: str, holder: str, codex_home: str, token: str) -> 
 
 
 def main(argv: list[str] | None = None) -> int:
-    """`reviewbot run --event <path> [--pr N]`."""
+    """Parse the command line and run one `reviewbot` subcommand.
+
+    `argv` holds the arguments, `sys.argv[1:]` when None. Returns the process
+    exit code; raises SystemExit on a usage error.
+    """
     parser = argparse.ArgumentParser(prog="reviewbot")
     sub = parser.add_subparsers(dest="command", required=True)
     runner = sub.add_parser("run", help="review one pull request")
@@ -945,6 +1034,23 @@ def main(argv: list[str] | None = None) -> int:
         "--repo",
         default=os.environ.get("GITHUB_REPOSITORY"),
         help="owner/name of the repository",
+    )
+
+    waiter = sub.add_parser(
+        "wait-for-checks",
+        help="wait for the checks the policy lists before the review reads CI",
+    )
+    waiter.add_argument("--pr", type=int, required=True, help="pull request number")
+    waiter.add_argument(
+        "--repo",
+        default=os.environ.get("GITHUB_REPOSITORY"),
+        help="owner/name of the repository",
+    )
+    waiter.add_argument(
+        "--force",
+        action="store_true",
+        default=os.environ.get("REVIEWBOT_FORCE", "") == "true",
+        help="do not wait: a forced review does not gate on CI",
     )
 
     deriver = sub.add_parser(
@@ -1046,6 +1152,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.repo:
         parser.error("GITHUB_REPOSITORY is not set and --repo was not given")
 
+    if args.command == "wait-for-checks":
+        return wait_for_checks(repo=args.repo, token=token, pr_number=args.pr, force=args.force)
+
     event = {}
     if args.event and os.path.exists(args.event):
         with open(args.event) as handle:
@@ -1082,6 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
             pr_number=args.pr,
             org_api=GitHub(args.repo, org_token) if org_token else None,
             force=args.force,
+            waited_head=os.environ.get("REVIEWBOT_WAITED_HEAD", ""),
         )
     except Exception:  # the job must fail loudly, never silently
         traceback.print_exc()

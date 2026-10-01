@@ -34,6 +34,8 @@ _TOP_TYPES = {
     "codex_reasoning_effort": str,
     "gate": bool,
     "require_ci_green": bool,
+    "wait_for_checks": list,
+    "wait_for_checks_seconds": int,
     "proof": dict,
     "ratings": bool,
     "decision_packets": bool,
@@ -70,6 +72,8 @@ JOB_BUDGET_MINUTES = 90.0
 JOB_OVERHEAD_MINUTES = 10.0
 # 2 * MAX + overhead must fit the budget, leaving room for a lease wait.
 MAX_TIMEOUT_MINUTES = 30.0
+# The wait for listed checks comes out of the same budget, before the lease.
+MAX_WAIT_FOR_CHECKS_SECONDS = 300
 
 
 class PolicyError(ValueError):
@@ -132,6 +136,11 @@ def _check_type(key: str, value, expected: type) -> None:
 
 
 def _validate(policy: dict) -> None:
+    """Check a merged policy's types and values.
+
+    `policy` is the defaults with the repository's overrides applied. Returns
+    None; raises PolicyError naming the first key that is wrong.
+    """
     for key, expected in _TOP_TYPES.items():
         _check_type(key, policy[key], expected)
     for parent, table in _NESTED_TYPES.items():
@@ -175,12 +184,18 @@ def _validate(policy: dict) -> None:
             f"model time against a {JOB_BUDGET_MINUTES:g} minute job budget, and the job would be "
             f"killed mid-review"
         )
+    if not 0 <= policy["wait_for_checks_seconds"] <= MAX_WAIT_FOR_CHECKS_SECONDS:
+        raise PolicyError(
+            f"wait_for_checks_seconds must be from 0 to {MAX_WAIT_FOR_CHECKS_SECONDS}: the wait "
+            f"comes out of the {JOB_BUDGET_MINUTES:g} minute job budget"
+        )
     for key in (
         "ignore_paths",
         "ignore_authors",
         "auto_approve_paths",
         "trusted_associations",
         "trusted_authors",
+        "wait_for_checks",
     ):
         for item in policy[key]:
             if not isinstance(item, str):
@@ -188,3 +203,8 @@ def _validate(policy: dict) -> None:
     for item in policy["proof"]["paths"] + policy["auto_merge"]["authors"]:
         if not isinstance(item, str):
             raise PolicyError("proof.paths and auto_merge.authors must hold strings only")
+    if policy["check_name"] in policy["wait_for_checks"]:
+        raise PolicyError(
+            f"wait_for_checks may not list {policy['check_name']!r}, the review's own check, "
+            f"which the wait never sees"
+        )

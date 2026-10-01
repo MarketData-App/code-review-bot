@@ -261,6 +261,21 @@ jobs:
             --pr "${{ steps.pr.outputs.number }}" \
             --repo "$GITHUB_REPOSITORY"
 
+      # It holds this runner but never the Codex lease, and `|| true` keeps it
+      # from failing the job. `head` is the commit it waited for: the review
+      # skips when the pull request has moved past it.
+      - name: Wait for the checks the policy lists
+        id: wait
+        if: steps.gate.outputs.trusted == 'true'
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          REVIEWBOT_FORCE: ${{ inputs.force }}
+        run: |
+          uv run --project bot reviewbot wait-for-checks \
+            --pr "${{ steps.pr.outputs.number }}" \
+            --repo "$GITHUB_REPOSITORY" || true
+
       - name: Check out the pull request head (read only)
         if: steps.gate.outputs.trusted == 'true'
         uses: actions/checkout@v7
@@ -366,6 +381,7 @@ jobs:
           # allowed the same author. One job, two opposite answers.
           REVIEWBOT_ORG_TOKEN: ${{ steps.org-token.outputs.token }}
           REVIEWBOT_FORCE: ${{ inputs.force }}
+          REVIEWBOT_WAITED_HEAD: ${{ steps.wait.outputs.head }}
         run: |
           uv run --project bot reviewbot run \
             --event "$GITHUB_EVENT_PATH" \

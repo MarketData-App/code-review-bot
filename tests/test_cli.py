@@ -585,3 +585,55 @@ def test_the_ignore_paths_reach_the_diff_cap(live_claude):
     )
     review(api)
     assert api.gather_ignore_paths == ["tests/fixtures/**"]
+
+
+# --- the head the wait polled -----------------------------------------------
+
+
+def waited_review(api, waited_head):
+    """Run the review as the workflow does after `wait-for-checks` polled `waited_head`."""
+    return cli.run(
+        event=EVENT,
+        repo="MarketData-App/api",
+        token="ghs_x",
+        checkout="/w/pr",
+        api=api,
+        waited_head=waited_head,
+    )
+
+
+def test_a_head_that_moved_after_the_wait_is_not_reviewed(capsys):
+    """The new head's listed checks were never waited for; its own CI triggers
+    the review that waits for them."""
+    api = FakeGitHub(make_pr(head_sha="b" * 40))
+
+    assert waited_review(api, "a" * 40) == 0
+
+    assert api.comments == []
+    assert api.checks == []
+    assert "the head moved from aaaaaaa to bbbbbbb" in capsys.readouterr().out
+
+
+def test_the_head_the_wait_polled_goes_on_to_the_usual_checks(capsys):
+    """An unmoved head is not skipped for the pin, only for what `should_skip` says."""
+    api = FakeGitHub(make_pr(ci_state="pending"))
+
+    assert waited_review(api, "a" * 40) == 0
+
+    out = capsys.readouterr().out
+    assert "the head moved" not in out
+    assert "CI has not finished on the head commit" in out
+
+
+def test_the_command_forwards_the_head_the_wait_polled(monkeypatch):
+    """REVIEWBOT_WAITED_HEAD, which the workflow sets from the wait step, reaches the run."""
+    seen = {}
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setenv("REVIEWBOT_WAITED_HEAD", "abc")
+    for name in ("GITHUB_EVENT_PATH", "REVIEWBOT_ORG_TOKEN", "REVIEWBOT_FORCE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(cli, "run", lambda **kwargs: seen.update(kwargs) or 0)
+
+    assert cli.main(["run", "--checkout", "/w/pr", "--repo", "o/r", "--pr", "7"]) == 0
+
+    assert seen["waited_head"] == "abc"

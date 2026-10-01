@@ -178,6 +178,34 @@ def test_every_step_after_the_gate_is_conditional_on_it():
         assert "steps.gate.outputs.trusted == 'true'" in condition, item.get("name")
 
 
+def test_the_listed_checks_are_waited_for_before_the_head_is_fetched():
+    """The wait runs after the gate, and before the head is checked out and the
+    Codex lease is taken."""
+    names = [(s.get("name") or "") for s in steps()]
+    wait_at = names.index("Wait for the checks the policy lists")
+    assert names.index("Refuse a pull request from outside the organisation") < wait_at
+    assert wait_at < names.index("Check out the pull request head (read only)")
+    assert wait_at < names.index("Borrow the Codex credential")
+
+
+def test_the_wait_step_runs_the_tested_command_and_cannot_fail_the_job():
+    """The step reads with the repository's own App token, forwards `force`,
+    and a failure of the command never skips the review."""
+    waiter = step("wait for the checks the policy lists")
+    assert waiter["id"] == "wait"
+    assert "reviewbot wait-for-checks" in waiter["run"]
+    assert waiter["run"].rstrip().endswith("|| true")
+    assert waiter["env"]["GITHUB_TOKEN"] == "${{ steps.app-token.outputs.token }}"
+    assert waiter["env"]["REVIEWBOT_FORCE"] == "${{ inputs.force }}"
+
+
+def test_the_review_is_pinned_to_the_head_the_wait_polled():
+    """The review gets the commit the wait polled, so a push during the wait
+    cannot be reviewed before its own checks were waited for."""
+    env = step("run the review")["env"]
+    assert env["REVIEWBOT_WAITED_HEAD"] == "${{ steps.wait.outputs.head }}"
+
+
 def test_the_gate_step_runs_the_tested_command():
     gate = step("refuse a pull request")
     assert "reviewbot gate" in gate["run"]
