@@ -45,10 +45,12 @@ class FakeGitHub:
     """Answers the pull request, the policy, and one scripted read of the check
     runs per call, repeating the last one; records what each read asked for."""
 
-    def __init__(self, policy, reads):
-        """Keep the policy text and the reads, with no request recorded yet."""
+    def __init__(self, policy, reads, files=("src/client.py",)):
+        """Keep the policy text, the reads and the changed files, with no
+        request recorded yet."""
         self.policy = policy
         self.reads = list(reads)
+        self.files = list(files)
         self.policy_reads = []
         self.check_reads = []
 
@@ -65,6 +67,10 @@ class FakeGitHub:
         """The policy text, recording the path and ref asked for."""
         self.policy_reads.append((path, ref))
         return self.policy
+
+    def changed_files(self, number):
+        """The pull request's changed files."""
+        return [{"path": path, "status": "modified"} for path in self.files]
 
     def check_runs(self, sha, exclude_check_name):
         """The next scripted read, raised when it is an exception."""
@@ -202,7 +208,7 @@ def test_the_wait_names_the_head_it_polled(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("policy", "force", "reads"),
     [
-        ("", False, [[actions()]]),
+        ("wait_for_checks: []\n", False, [[actions()]]),
         (LISTED, True, [[actions()]]),
         (LISTED + "require_ci_green: false\n", False, [[actions()]]),
         ("wait_for_checks: [1]\n", False, [[actions()]]),
@@ -260,12 +266,58 @@ def test_a_check_still_running_at_the_deadline_is_reported_as_unfinished(capsys)
 
 
 def test_nothing_is_read_when_no_check_is_listed():
-    """The default policy lists no check, so no check run is read."""
-    api = FakeGitHub("", [[actions()]])
+    """A repository that turns the wait off has no check run read."""
+    api = FakeGitHub("wait_for_checks: []\n", [[actions()]])
 
     assert wait(api, FakeClock()) == 0
 
     assert api.seen == 0
+
+
+def test_codecov_is_waited_for_by_default(capsys):
+    """A repository that sets nothing waits for both Codecov checks."""
+    api = FakeGitHub("", [[actions()], [actions(), *BOTH]])
+    clock = FakeClock()
+
+    assert wait(api, clock) == 0
+
+    assert clock.slept == [cli.WAIT_POLL_SECONDS]
+    assert "codecov/patch, codecov/project finished" in capsys.readouterr().out
+
+
+def test_the_default_wait_gives_up_after_two_minutes(capsys):
+    """Where Codecov never reports, the default costs two minutes at most."""
+    api = FakeGitHub("", [[actions()]])
+    clock = FakeClock()
+
+    assert wait(api, clock) == 0
+
+    assert clock.waited == 120
+    assert "did not appear within 120s" in capsys.readouterr().out
+
+
+def test_a_pull_request_whose_files_are_all_ignored_does_not_wait(tmp_path, monkeypatch, capsys):
+    """The review skips such a pull request anyway, so nothing is waited for or pinned."""
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    policy = LISTED + 'ignore_paths: ["docs/**", "*.md"]\n'
+    api = FakeGitHub(policy, [[actions()]], files=["docs/setup.md", "README.md"])
+
+    assert wait(api, FakeClock()) == 0
+
+    assert api.seen == 0
+    assert not output.exists()
+    assert "every changed file matches ignore_paths" in capsys.readouterr().out
+
+
+def test_one_file_outside_ignore_paths_keeps_the_wait():
+    """A pull request the review will read still waits for the listed checks."""
+    policy = LISTED + 'ignore_paths: ["docs/**", "*.md"]\n'
+    api = FakeGitHub(policy, [[actions(), *BOTH]], files=["docs/setup.md", "src/client.py"])
+
+    assert wait(api, FakeClock()) == 0
+
+    assert api.seen == 1
 
 
 def test_a_forced_review_does_not_wait():
@@ -344,6 +396,11 @@ def test_the_real_client_reads_the_base_policy_and_the_head_check_runs(capsys):
     )
     transport.add(
         "GET",
+        "/repos/o/r/pulls/1/files?per_page=100&page=1",
+        data=[{"filename": "src/client.py", "status": "modified"}],
+    )
+    transport.add(
+        "GET",
         "/repos/o/r/commits/abc/check-runs?per_page=100",
         data={"check_runs": [actions(), *BOTH]},
     )
@@ -355,6 +412,7 @@ def test_the_real_client_reads_the_base_policy_and_the_head_check_runs(capsys):
     assert [call["path"] for call in transport.calls] == [
         "/repos/o/r/pulls/1",
         "/repos/o/r/contents/.github/code-review/policy.yml?ref=release/2.0",
+        "/repos/o/r/pulls/1/files?per_page=100&page=1",
         "/repos/o/r/commits/abc/check-runs?per_page=100",
     ]
 

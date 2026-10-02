@@ -140,11 +140,16 @@ def test_the_association_list_may_not_be_empty():
         config.load("trusted_associations: []\n")
 
 
-def test_no_check_is_waited_for_by_default():
-    """A repository that lists nothing waits for nothing."""
+def test_codecov_is_waited_for_by_default():
+    """A repository that sets nothing waits up to two minutes for Codecov."""
     policy = config.defaults()
-    assert policy["wait_for_checks"] == []
-    assert policy["wait_for_checks_seconds"] == 300
+    assert policy["wait_for_checks"] == ["codecov/patch", "codecov/project"]
+    assert policy["wait_for_checks_seconds"] == 120
+
+
+def test_a_repository_can_turn_the_wait_off():
+    """An empty list replaces the default, for a repository without Codecov."""
+    assert config.load("wait_for_checks: []\n")["wait_for_checks"] == []
 
 
 def test_a_repository_lists_the_checks_to_wait_for():
