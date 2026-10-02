@@ -266,8 +266,8 @@ def wait_for_checks(
 ) -> int:
     """Wait until every check the base-branch policy lists in `wait_for_checks`
     exists and no check run is still running, for at most
-    `wait_for_checks_seconds`, and write the commit it polled as the step
-    output `head`.
+    `wait_for_checks_seconds` and not at all when every changed file matches
+    `ignore_paths`, and write the commit it polled as the step output `head`.
 
     `repo`, `token` and `pr_number` name the pull request, `force` skips the
     wait, and `api`, `sleep` and `clock` replace the GitHub client, the sleep
@@ -298,15 +298,19 @@ def _wait_for_listed_checks(api, pr_number: int, sleep, clock) -> str:
 
     `api` is the GitHub client, `pr_number` the pull request, and `sleep` and
     `clock` the sleep and the monotonic clock. Returns the commit it polled, or
-    "" when the policy asks for no wait; raises `config.PolicyError` for a
-    malformed policy, and `GitHubError` or the transport's own error for a
-    failed read.
+    "" when the policy asks for no wait or every changed file matches
+    `ignore_paths`; raises `config.PolicyError` for a malformed policy, and
+    `GitHubError` or the transport's own error for a failed read.
     """
     pull = api.pull_request(pr_number) or {}
     base_ref = (pull.get("base") or {}).get("ref", "")
     policy = config.load(api.file_at_ref(POLICY_PATH, base_ref or "HEAD"))
     listed = policy["wait_for_checks"]
     if not listed or not policy["require_ci_green"]:
+        return ""
+    paths = [item["path"] for item in api.changed_files(pr_number)]
+    if facts.all_match(paths, policy["ignore_paths"]):
+        print("reviewbot wait: every changed file matches ignore_paths; nothing to wait for")
         return ""
     sha = (pull.get("head") or {}).get("sha", "")
     seconds = policy["wait_for_checks_seconds"]

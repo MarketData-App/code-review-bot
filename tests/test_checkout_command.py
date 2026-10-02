@@ -775,7 +775,7 @@ def test_the_lease_wait_leaves_room_for_the_wait_for_listed_checks(cap):
 
 @pytest.mark.parametrize(
     "text",
-    ["", 'wait_for_checks: ["codecov/patch"]\nrequire_ci_green: false\n'],
+    ["wait_for_checks: []\n", 'wait_for_checks: ["codecov/patch"]\nrequire_ci_green: false\n'],
 )
 def test_a_policy_that_does_not_wait_keeps_the_whole_lease_wait(text):
     """No listed check, or no CI gate, means no wait to leave room for."""

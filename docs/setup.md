@@ -235,21 +235,26 @@ with `proof.paths` — and know that it is an ANY-match over the whole pull
 request, so one matching file gates every file. On sdk-py,
 `paths: ["src/marketdata/**"]` fires on 7 of 7 open pull requests.
 
-**List the checks another app reports after CI.** Codecov, with its default
+**The checks another app reports after CI.** Codecov, with its default
 `wait_for_ci`, reports only once every other check has finished, so its checks
 land after the `Tests` workflow that triggers the review. A review that reads CI
 in that gap either misses Codecov or finds it in progress and skips, and nothing
 triggers it again. Measured on sdk-py: Codecov reported 35 to 50 seconds after
 `Tests`, and the review read CI from 24 seconds before it to 8 seconds after.
-Name those checks by their check-run names, and the review waits for them
-before it reads CI:
+So by default the review waits for `codecov/patch` and `codecov/project`
+before it reads CI. Codecov reports on sdk-py, sdk-csharp, sdk-php, sdk-go and
+sdk-java; a repository whose CI does not report to it, like sdk-js, turns the
+wait off, or names its own late checks by their check-run names, since the
+list replaces the default:
 
 ```yaml
-wait_for_checks: ["codecov/patch", "codecov/project"]
-wait_for_checks_seconds: 300   # the longest it waits, 0 to 300
+wait_for_checks: []            # this repository does not report to Codecov
+wait_for_checks_seconds: 120   # the longest it waits, 0 to 300
 ```
 
-The wait runs only while `require_ci_green` is on, and not for a forced review.
+The wait runs only while `require_ci_green` is on, and not for a forced review
+or a pull request whose changed files all match `ignore_paths`, which the
+review skips anyway.
 It ends once every listed check exists and no check run on the head is still
 running, from any app, so the earlier of two trigger workflows waits too: a
 repository that borrows the Codex lease still reviews once, because the later
@@ -259,11 +264,14 @@ moves to a new head during the wait, this run skips: the new head's own CI
 triggers a review that waits for it. The wait holds the job's runner, which on
 the self-hosted runner other repositories share, but never the Codex lease.
 
-A listed check that fails makes the review skip, like any red check: list
-`codecov/patch` only if patch coverage should hold back the review, and
-`codecov/project` alone otherwise. A listed check that never appears costs the
-whole wait, and then the review reads CI without it. Add the key only once the
-bot you call knows it: a policy with an unknown key fails the review.
+A check that fails makes the review skip, like any red check, listed or not,
+because the review reads every check: with the wait, a failing `codecov/patch`
+reliably skips it. To keep coverage from holding a review back, make that
+status informational in the repository's Codecov configuration
+(`informational: true`). A listed check that never appears costs the whole
+wait, and then the review reads CI without it: that is a pull request whose
+coverage never reached Codecov, or every review in a repository that does not
+report to it and has not turned the wait off.
 
 ### 5. Leave the check advisory until you trust it
 
