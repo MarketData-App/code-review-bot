@@ -15,6 +15,7 @@ import time as _time
 import traceback
 
 from reviewbot import brief as brief_mod
+from reviewbot import callers as callers_mod
 from reviewbot import config, facts, findings, merge, render
 from reviewbot import policy as policy_mod
 from reviewbot import result as result_mod
@@ -97,17 +98,94 @@ def is_automatic(event: dict) -> bool:
     )
 
 
-def preflight(*, event: dict, repo: str, token: str, api=None) -> dict:
+# A workflow run in one of these states has not finished, and its completion
+# sends the caller another `workflow_run`. `action_required` is left out on
+# purpose: a run that waits for a person to approve it may never run at all,
+# and a completion that stopped for it would leave the head with no review.
+UNFINISHED_RUN_STATUSES = frozenset({"requested", "queued", "pending", "waiting", "in_progress"})
+
+
+def _caller_triggers(api, repo: str, workflow_ref: str, workflow_sha: str) -> list[str]:
+    """The names in the caller's `on.workflow_run.workflows`, or [].
+
+    `workflow_ref` is GITHUB_WORKFLOW_REF, `owner/name/path@ref`, which in a
+    reusable workflow names the CALLER's file, and `workflow_sha` is the
+    commit of that file. Returns [] when the ref names no workflow file of
+    `repo` or the file holds no list. Raises GitHubError when the file cannot
+    be read.
+    """
+    where, _, ref = workflow_ref.partition("@")
+    prefix = f"{repo}/"
+    if not where.lower().startswith(prefix.lower()):
+        return []
+    path = where[len(prefix) :]
+    if not path.startswith(".github/workflows/") or not (workflow_sha or ref):
+        return []
+    return callers_mod.trigger_workflows(api.file_at_ref(path, workflow_sha or ref)) or []
+
+
+def _other_triggers_running(
+    api, event: dict, repo: str, workflow_ref: str, workflow_sha: str
+) -> tuple[list[str], str]:
+    """The caller's other trigger workflows that still run on this head.
+
+    `event` is the `workflow_run` payload, and `workflow_ref` and
+    `workflow_sha` name the caller's file, as `_caller_triggers` reads them.
+    Only a workflow on the caller's own trigger list counts: its completion is
+    the next `workflow_run`. A non-trigger workflow or another app's check
+    sends none, so waiting for it would leave the head with no review.
+    Returns the names still running, and a note for the log when there are
+    none. Raises GitHubError when the caller's file or the runs cannot be
+    read.
+    """
+    run = event.get("workflow_run") or {}
+    sha = str(run.get("head_sha") or "")
+    run_event = str(run.get("event") or "")
+    if not sha or not run_event:
+        return [], "the event names no head commit; no trigger workflow was read"
+    names = _caller_triggers(api, repo, workflow_ref, workflow_sha)
+    if not names:
+        return [], "the caller's trigger workflows are unknown, so none was read"
+    # A list that does not name this run's own workflow does not describe the
+    # trigger that started this run, so it may not stop one.
+    if run.get("name") not in names:
+        return [], f"{run.get('name')!r} is not in the caller's trigger list"
+    running = sorted(
+        {
+            str(other.get("name"))
+            for other in api.workflow_runs(sha, run_event)
+            if other.get("name") in names
+            # The run that sent this event is finished, also when the listing
+            # has not caught up with it yet.
+            and other.get("id") != run.get("id")
+            and other.get("status") in UNFINISHED_RUN_STATUSES
+        }
+    )
+    return running, f"no other trigger workflow runs on {sha[:7]}"
+
+
+def preflight(
+    *,
+    event: dict,
+    repo: str,
+    token: str,
+    api=None,
+    workflow_ref: str = "",
+    workflow_sha: str = "",
+) -> dict:
     """Decide on a GitHub-hosted runner whether this CI completion starts the
     review job, so that a push which will not be reviewed never queues for the
     self-hosted runner.
 
     `event` is the `workflow_run` payload, `repo` and `token` name the
-    repository and its App token, and `api` replaces the GitHub client. It
-    says no for one reason only, `policy_mod.push_skip`, the rule `reviewbot
-    run` applies too. What it cannot read, it leaves to the review job, which
-    then decides as it always has. Returns {"review": bool, "reason": str};
-    raises nothing.
+    repository and its App token, `api` replaces the GitHub client, and
+    `workflow_ref` and `workflow_sha` name the caller's workflow file
+    (GITHUB_WORKFLOW_REF and GITHUB_WORKFLOW_SHA). It says no for two reasons
+    only: `policy_mod.push_skip`, the rule `reviewbot run` applies too; and,
+    under `require_ci_green`, another of the caller's trigger workflows that
+    still runs on the head, whose own completion starts the review. What it
+    cannot read, it leaves to the review job, which then decides as it always
+    has. Returns {"review": bool, "reason": str}; raises nothing.
     """
     try:
         api = api or GitHub(repo, token)
@@ -120,19 +198,37 @@ def preflight(*, event: dict, repo: str, token: str, api=None) -> dict:
         pull = api.pull_request(number) or {}
         base_ref = (pull.get("base") or {}).get("ref") or "HEAD"
         policy = config.load(api.file_at_ref(POLICY_PATH, base_ref))
-        if policy["review_on_push"] != "first":
-            return {"review": True, "reason": f"review_on_push is {policy['review_on_push']}"}
-        previous, since = review_thread(api.issue_comments(number))
-        skip = policy_mod.push_skip(policy, previous, since)
+        if policy["review_on_push"] == "first":
+            previous, since = review_thread(api.issue_comments(number))
+            skip = policy_mod.push_skip(policy, previous, since)
+            if skip:
+                return {"review": False, "reason": f"#{number}: {skip}"}
+            allowed = f"#{number} has no review yet, or a person asked for one"
+        else:
+            allowed = f"#{number}: review_on_push is {policy['review_on_push']}"
+        # Without `require_ci_green` the review job does not wait for CI, so a
+        # review from this completion is a real one. A later trigger that ends
+        # red or cancelled sends no green `workflow_run`, and a stop here would
+        # leave the head with no review.
+        if policy["require_ci_green"]:
+            running, note = _other_triggers_running(api, event, repo, workflow_ref, workflow_sha)
+        else:
+            running, note = [], "require_ci_green is off; no trigger workflow was read"
     except Exception as exc:  # noqa: BLE001 - a preflight problem must never stop a review
         return {
             "review": True,
             "reason": f"could not decide ({type(exc).__name__}: {scrub(str(exc))}); "
             "the review job decides",
         }
-    if skip:
-        return {"review": False, "reason": f"#{number}: {skip}"}
-    return {"review": True, "reason": f"#{number} has no review yet, or a person asked for one"}
+    if running:
+        sha = str((event.get("workflow_run") or {}).get("head_sha") or "")[:7]
+        verb = "is" if len(running) == 1 else "are"
+        return {
+            "review": False,
+            "reason": f"#{number}: {', '.join(running)} {verb} still running on {sha}; "
+            "the last trigger workflow to finish starts the review",
+        }
+    return {"review": True, "reason": f"{allowed}; {note}"}
 
 
 def refused(reason: str) -> dict:
@@ -1104,6 +1200,19 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("GITHUB_REPOSITORY"),
         help="owner/name of the repository",
     )
+    # From the environment, not from review.yml: the runner sets both in every
+    # job, so neither side of a review.yml and bot-ref mismatch breaks.
+    preflighter.add_argument(
+        "--workflow-ref",
+        default=os.environ.get("GITHUB_WORKFLOW_REF", ""),
+        help="owner/name/path@ref of the caller workflow, whose workflow_run list names "
+        "the triggers",
+    )
+    preflighter.add_argument(
+        "--workflow-sha",
+        default=os.environ.get("GITHUB_WORKFLOW_SHA", ""),
+        help="the commit of the caller workflow file",
+    )
 
     waiter = sub.add_parser(
         "wait-for-checks",
@@ -1230,7 +1339,13 @@ def main(argv: list[str] | None = None) -> int:
             event = json.load(handle)
 
     if args.command == "preflight":
-        decision = preflight(event=event, repo=args.repo, token=token)
+        decision = preflight(
+            event=event,
+            repo=args.repo,
+            token=token,
+            workflow_ref=args.workflow_ref,
+            workflow_sha=args.workflow_sha,
+        )
         print(f"reviewbot preflight: {scrub(decision['reason'])}")
         _say_output("review", "true" if decision["review"] else "false")
         return 0

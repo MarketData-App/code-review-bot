@@ -361,6 +361,30 @@ class GitHub:
                 return out
             page += 1
 
+    def workflow_runs(self, head_sha: str, event: str) -> list[dict]:
+        """Every Actions workflow run on `head_sha` that `event` started.
+
+        `head_sha` is the commit and `event` the trigger of the runs, for
+        example `pull_request`. Returns the run objects as the API gives them,
+        across every page. Needs the App's `actions: read`. Raises GitHubError,
+        or the transport's own error, when a page cannot be read.
+        """
+        # NOT `_paged`: this endpoint answers with an OBJECT,
+        # `{total_count, workflow_runs: [...]}`, as `workflow_states` explains.
+        path = (
+            f"/repos/{self.repo}/actions/runs"
+            f"?head_sha={urllib.parse.quote(head_sha)}&event={urllib.parse.quote(event)}"
+        )
+        out, page = [], 1
+        while True:
+            reply = self._request("GET", f"{path}&per_page=100&page={page}").data
+            found = reply.get("workflow_runs") if isinstance(reply, dict) else None
+            found = found if isinstance(found, list) else []
+            out.extend(run for run in found if isinstance(run, dict))
+            if len(found) < 100:
+                return out
+            page += 1
+
     def ref_names(self) -> set:
         """Every branch and tag name in this repository.
 
