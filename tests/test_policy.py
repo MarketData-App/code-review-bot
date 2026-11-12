@@ -688,3 +688,91 @@ def test_force_reviews_a_red_pull_request():
     # whose CI is red is a real thing to want.
     pr = make_pr(ci_state="failure")
     assert policy.should_skip(pr, config.defaults(), force=True) is None
+
+
+# --- review_on_push: first (issue #27) --------------------------------------
+
+
+def bot_comment(sha="a" * 40, login="marketdata-code-review[bot]", kind="Bot"):
+    """The bot's own review comment, as the issues API returns it."""
+    return {
+        "user": {"login": login, "type": kind},
+        "body": f"review\n<!-- marketdata-code-review -->\n"
+        f'<!-- reviewbot-state: {{"reviewed_sha":"{sha}","revision":1}} -->',
+    }
+
+
+FIRST = "review_on_push: first\n"
+
+
+def test_always_reviews_a_push_to_a_reviewed_pull_request():
+    pr = make_pr(head_sha="b" * 40, previous_comment=bot_comment(), previous_state=REVIEWED)
+    assert policy.should_skip(pr, config.defaults(), automatic=True) is None
+
+
+def test_first_skips_a_push_once_the_bot_has_reviewed():
+    pr = make_pr(head_sha="b" * 40, previous_comment=bot_comment(), previous_state=REVIEWED)
+    reason = policy.should_skip(pr, config.load(FIRST), automatic=True)
+    assert "review_on_push is first" in reason
+    assert "@marketdata-code-review re-review" in reason
+
+
+def test_first_still_reviews_the_first_push_by_itself():
+    pr = make_pr(head_sha="b" * 40)
+    assert policy.should_skip(pr, config.load(FIRST), automatic=True) is None
+
+
+def test_first_reviews_a_push_when_a_person_asked_since_the_last_review():
+    """A `re-review` that arrived while CI was still running skipped for CI.
+    The CI run that ends next must then do the review, or nothing does."""
+    pr = make_pr(
+        head_sha="b" * 40,
+        previous_comment=bot_comment(),
+        previous_state=REVIEWED,
+        comments_since=[{"body": "@marketdata-code-review re-review"}],
+    )
+    assert policy.should_skip(pr, config.load(FIRST), automatic=True) is None
+
+
+def test_first_does_not_count_chat_as_a_request():
+    pr = make_pr(
+        head_sha="b" * 40,
+        previous_comment=bot_comment(),
+        previous_state=REVIEWED,
+        comments_since=[{"body": "pushed a fix, thanks"}],
+    )
+    assert policy.should_skip(pr, config.load(FIRST), automatic=True) is not None
+
+
+def test_first_reviews_on_a_comment_or_a_dispatch():
+    """Only an automatic trigger is a push. A person asking always gets one."""
+    pr = make_pr(head_sha="b" * 40, previous_comment=bot_comment(), previous_state=REVIEWED)
+    assert policy.should_skip(pr, config.load(FIRST), automatic=False) is None
+
+
+def test_force_overrides_first():
+    pr = make_pr(head_sha="b" * 40, previous_comment=bot_comment(), previous_state=REVIEWED)
+    assert policy.should_skip(pr, config.load(FIRST), force=True, automatic=True) is None
+
+
+def test_a_pasted_marker_is_not_a_review():
+    """Anyone who can comment can paste the marker. Under `first` that would
+    stop the first review, so only a comment by an App counts."""
+    pasted = bot_comment(login="mallory", kind="User")
+    pr = make_pr(head_sha="b" * 40, previous_comment=pasted, previous_state=REVIEWED)
+    assert policy.should_skip(pr, config.load(FIRST), automatic=True) is None
+
+
+def test_another_apps_marker_is_not_a_review():
+    """Any installed App can comment as a Bot. Only this App's login counts."""
+    forged = bot_comment(login="other-app[bot]", kind="Bot")
+    pr = make_pr(head_sha="b" * 40, previous_comment=forged, previous_state=REVIEWED)
+    assert policy.should_skip(pr, config.load(FIRST), automatic=True) is None
+
+
+def test_the_push_rule_reads_the_same_facts_the_preflight_job_reads():
+    """`push_skip` is the one rule both the preflight job and `run` apply."""
+    pol = config.load(FIRST)
+    assert policy.push_skip(pol, bot_comment(), []) is not None
+    assert policy.push_skip(pol, None, []) is None
+    assert policy.push_skip(config.defaults(), bot_comment(), []) is None

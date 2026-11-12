@@ -630,3 +630,67 @@ def test_the_caller_template_needs_no_edit_for_an_sdk_repository():
     # repository that is private or outside the organisation, and that is right.
     triggers = text[text.index("\non:") : text.index("\njobs:")]
     assert "CHANGE ME" not in triggers, "the trigger block must need no edit for an SDK repository"
+
+
+# --- the preflight job decides before the self-hosted runner (issue #27) ----
+
+
+PREFLIGHT = REVIEW["jobs"]["preflight"]
+
+
+def preflight_step(name_fragment):
+    for item in PREFLIGHT["steps"]:
+        if name_fragment.lower() in (item.get("name") or "").lower():
+            return item
+    raise AssertionError(f"no preflight step named like {name_fragment}")
+
+
+def test_the_preflight_job_never_waits_for_the_self_hosted_runner():
+    # The whole point: a push that will not be reviewed must not queue for the
+    # one runner the private repositories share.
+    assert PREFLIGHT["runs-on"] == "ubuntu-latest"
+
+
+def test_the_preflight_job_runs_only_for_a_green_ci_completion():
+    cond = PREFLIGHT["if"]
+    assert "github.event_name == 'workflow_run'" in cond
+    assert "conclusion == 'success'" in cond
+    for event in ("issue_comment", "workflow_dispatch", "pull_request_target"):
+        assert event not in cond
+
+
+def test_the_preflight_job_asks_for_no_write_permission_of_its_own():
+    assert PREFLIGHT["permissions"] == {"contents": "read"}
+
+
+def test_the_preflight_job_fetches_nothing_from_the_pull_request():
+    # It runs before the gate, so it may read the API but never the head.
+    for item in PREFLIGHT["steps"]:
+        uses = item.get("uses") or ""
+        if uses.startswith("actions/checkout"):
+            assert item["with"]["repository"] == "MarketData-App/code-review-bot"
+            assert item["with"]["persist-credentials"] is False
+        assert "refs/pull" not in str(item)
+
+
+def test_the_preflight_job_runs_the_bot_version_the_review_job_runs():
+    assert preflight_step("check out the bot")["with"]["ref"] == "${{ inputs.bot-ref }}"
+
+
+def test_the_preflight_job_runs_the_tested_command_and_fails_toward_reviewing():
+    decide = preflight_step("decide whether this push starts a review")
+    assert decide["id"] == "decide"
+    assert "reviewbot preflight" in decide["run"]
+    assert '|| echo "review=true" >> "$GITHUB_OUTPUT"' in decide["run"]
+    assert PREFLIGHT["outputs"]["review"] == "${{ steps.decide.outputs.review }}"
+
+
+def test_the_review_job_waits_for_the_preflight_answer():
+    review = REVIEW["jobs"]["review"]
+    assert review["needs"] == "preflight"
+    # Without a status function, a SKIPPED preflight (every comment and
+    # dispatch) would skip the review job too.
+    assert review["if"].strip().startswith("!cancelled() &&")
+    # Only an explicit no stops it: a failed preflight has no output, and the
+    # review job then decides as it did before the preflight job existed.
+    assert "needs.preflight.outputs.review != 'false'" in review["if"]

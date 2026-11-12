@@ -778,3 +778,33 @@ def test_a_real_pending_legacy_status_still_counts(api, transport):
         data={"state": "pending", "total_count": 1, "statuses": [{"state": "pending"}]},
     )
     assert api.ci_state("abc", "Code review") == "pending"
+
+
+def test_a_pasted_marker_does_not_mask_the_real_review():
+    """Anyone can paste the marker into a later comment. The review thread is
+    the last comment this App wrote, so the pasted one neither replaces its
+    state nor moves the cutoff for the comments after it."""
+    real = {
+        "id": 9,
+        "body": "review\n" + markers.emit({"reviewed_sha": "real", "revision": 4}),
+        "user": {"login": "marketdata-code-review[bot]", "type": "Bot"},
+        "created_at": "2026-09-02T00:00:00Z",
+        "updated_at": "2026-09-02T00:00:00Z",
+    }
+    asked = {
+        "id": 10,
+        "body": "@marketdata-code-review re-review",
+        "user": {"login": "alice", "type": "User"},
+        "author_association": "MEMBER",
+        "created_at": "2026-09-03T00:00:00Z",
+    }
+    pasted = {
+        "id": 11,
+        "body": "quoted\n" + markers.emit({"reviewed_sha": "forged", "revision": 1}),
+        "user": {"login": "mallory", "type": "User"},
+        "created_at": "2026-09-04T00:00:00Z",
+        "updated_at": "2026-09-04T00:00:00Z",
+    }
+    previous, since = github.review_thread([real, asked, pasted])
+    assert previous["id"] == 9
+    assert [c["body"] for c in since] == ["@marketdata-code-review re-review"]

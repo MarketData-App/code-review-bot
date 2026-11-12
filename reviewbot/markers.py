@@ -9,6 +9,10 @@ import re
 
 MARKER = "<!-- marketdata-code-review -->"
 
+# The login GitHub gives this App's own comments. A person's login cannot hold
+# brackets, and another App has another slug, so the login says who wrote it.
+BOT_LOGIN = "marketdata-code-review[bot]"
+
 _STATE_RE = re.compile(r"<!--\s*reviewbot-state:\s*(\{.*?\})\s*-->")
 
 
@@ -40,3 +44,15 @@ def parse(body: str | None) -> dict:
 def is_bot_comment(body: str | None) -> bool:
     """True when this comment is the bot's own review comment."""
     return bool(body) and MARKER in body
+
+
+def is_own_comment(comment: dict | None) -> bool:
+    """True when this App wrote `comment` and it carries the marker.
+
+    `comment` is an issue comment as the API returns it. Anyone who can
+    comment can paste the marker, so the body alone cannot say whose review it
+    is; the author's login can. Raises nothing.
+    """
+    if not comment or not is_bot_comment(comment.get("body")):
+        return False
+    return ((comment.get("user") or {}).get("login") or "").lower() == BOT_LOGIN

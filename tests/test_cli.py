@@ -637,3 +637,48 @@ def test_the_command_forwards_the_head_the_wait_polled(monkeypatch):
     assert cli.main(["run", "--checkout", "/w/pr", "--repo", "o/r", "--pr", "7"]) == 0
 
     assert seen["waited_head"] == "abc"
+
+
+# --- review_on_push: first (issue #27) --------------------------------------
+
+FIRST_FILES = {cli.POLICY_PATH: "review_on_push: first\n"}
+BOT_REVIEW = {
+    "id": 9,
+    "user": {"login": "marketdata-code-review[bot]", "type": "Bot"},
+    "body": "x\n<!-- marketdata-code-review -->\n"
+    f'<!-- reviewbot-state: {{"reviewed_sha":"{"b" * 40}","revision":1}} -->',
+}
+REVIEWED_BEFORE = {"reviewed_sha": "b" * 40, "revision": 1, "finding_ids": []}
+WORKFLOW_RUN = {"workflow_run": {"conclusion": "success", "pull_requests": [{"number": 7}]}}
+RE_REVIEW = {
+    "action": "created",
+    "issue": {"number": 7, "pull_request": {"url": "u"}},
+    "comment": {"body": "@marketdata-code-review re-review"},
+}
+
+
+def reviewed_once():
+    pr = make_pr(previous_comment=BOT_REVIEW, previous_state=REVIEWED_BEFORE)
+    return FakeGitHub(pr, files=FIRST_FILES)
+
+
+@pytest.mark.parametrize("event", [WORKFLOW_RUN, EVENT], ids=["workflow_run", "pr_target"])
+def test_first_does_not_review_a_push_after_the_first_review(live_claude, capsys, event):
+    """The backstop on the runner, for a run the preflight job let through."""
+    api = reviewed_once()
+    assert review(api, event) == 0
+    assert (api.comments, api.checks, api.labels) == ([], [], [])
+    assert "review_on_push is first" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("event", [RE_REVIEW, {"inputs": {"pr": "7"}}], ids=["comment", "dispatch"])
+def test_first_reviews_the_current_head_when_a_person_asks(live_claude, event):
+    api = reviewed_once()
+    assert review(api, event) == 0
+    assert markers.parse(api.comments[0])["reviewed_sha"] == "a" * 40
+
+
+def test_first_still_starts_the_first_review_by_itself(live_claude):
+    api = FakeGitHub(make_pr(), files=FIRST_FILES)
+    assert review(api, WORKFLOW_RUN) == 0
+    assert len(api.comments) == 1

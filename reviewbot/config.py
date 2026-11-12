@@ -16,6 +16,10 @@ BACKENDS = ("claude", "codex")
 MODES = ("first", "fallback", "all")
 MERGE_METHODS = ("squash", "merge", "rebase")
 EFFORTS = ("low", "medium", "high")
+# When a push to a pull request starts a review. `first` reviews a push only
+# until the bot has reviewed the pull request once; after that a review starts
+# only when a person asks.
+REVIEW_ON_PUSH = ("always", "first")
 
 # The only associations a repository may declare trusted. NONE, CONTRIBUTOR
 # and FIRST_TIME_CONTRIBUTOR are absent on purpose: they are what an outsider
@@ -34,6 +38,7 @@ _TOP_TYPES = {
     "codex_reasoning_effort": str,
     "gate": bool,
     "require_ci_green": bool,
+    "review_on_push": str,
     "wait_for_checks": list,
     "wait_for_checks_seconds": int,
     "proof": dict,
@@ -168,6 +173,22 @@ def _validate(policy: dict) -> None:
         raise PolicyError(
             f"unknown auto_merge.method: {policy['auto_merge']['method']}; "
             f"choose from {', '.join(MERGE_METHODS)}"
+        )
+    if policy["review_on_push"] not in REVIEW_ON_PUSH:
+        raise PolicyError(
+            f"unknown review_on_push: {policy['review_on_push']}; "
+            f"choose from {', '.join(REVIEW_ON_PUSH)}"
+        )
+    # Under `first` no review reads a later push. An approval or an armed
+    # auto-merge from the first review would stay on the pull request and merge
+    # commits that nobody reviewed, so the combination is refused.
+    if policy["review_on_push"] == "first" and (
+        policy["auto_approve"] or policy["auto_merge"]["enabled"]
+    ):
+        raise PolicyError(
+            "review_on_push: first cannot be combined with auto_approve or "
+            "auto_merge.enabled: the first review's approval or auto-merge would "
+            "carry over to later pushes that no review has read"
         )
     if policy["codex_reasoning_effort"] not in EFFORTS:
         raise PolicyError(

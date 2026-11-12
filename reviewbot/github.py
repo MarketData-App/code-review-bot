@@ -65,6 +65,33 @@ def requests_transport(method: str, url: str, headers: dict, body: bytes | None)
     return Response(status=reply.status_code, data=data, text=reply.text)
 
 
+def review_thread(comments: list[dict]) -> tuple[dict | None, list[dict]]:
+    """The bot's review comment, and the other comments that came after it.
+
+    `comments` is a pull request's issue comments as the API returns them.
+    Returns the last comment this App wrote with the marker, or None, and the
+    later comments shaped as `PRFacts.comments_since` holds them. A marker
+    that someone else pasted is neither the review nor a later comment.
+    Raises nothing.
+    """
+    previous = None
+    for comment in comments:
+        if markers.is_own_comment(comment):
+            previous = comment
+    cutoff = previous.get("updated_at") if previous else None
+    since = [
+        {
+            "author": (c.get("user") or {}).get("login", ""),
+            "body": c.get("body") or "",
+            "is_maintainer": c.get("author_association") in MAINTAINER_ASSOCIATIONS,
+        }
+        for c in comments
+        if not markers.is_bot_comment(c.get("body"))
+        and (cutoff is None or c.get("created_at", "") > cutoff)
+    ]
+    return previous, since
+
+
 class GitHub:
     """The bot's whole view of GitHub."""
 
@@ -598,25 +625,8 @@ class GitHub:
         pull = self.pull_request(number)
         files = self.changed_files(number)
         diff, unseen = cap_diff(self.diff(number), max_diff_kb, ignore_paths)
-        comments = self.issue_comments(number)
-
-        previous = None
-        for comment in comments:
-            if markers.is_bot_comment(comment.get("body")):
-                previous = comment
+        previous, since = review_thread(self.issue_comments(number))
         state = markers.parse(previous.get("body") if previous else None)
-
-        cutoff = previous.get("updated_at") if previous else None
-        since = [
-            {
-                "author": (c.get("user") or {}).get("login", ""),
-                "body": c.get("body") or "",
-                "is_maintainer": c.get("author_association") in MAINTAINER_ASSOCIATIONS,
-            }
-            for c in comments
-            if not markers.is_bot_comment(c.get("body"))
-            and (cutoff is None or c.get("created_at", "") > cutoff)
-        ]
 
         user = pull.get("user") or {}
         return PRFacts(

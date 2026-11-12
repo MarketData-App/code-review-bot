@@ -83,7 +83,85 @@ on:
         required: false
 
 jobs:
+  # DECIDED BEFORE THE SELF-HOSTED RUNNER. Every CI workflow a
+  # caller names sends its own workflow_run, so one push to MarketData-App/api
+  # starts three review runs, and on a private repository each one queued for
+  # the single shared self-hosted runner before it could find out that it had
+  # nothing to do. Under `review_on_push: first` a push to a pull request the
+  # bot has already reviewed must not start a review job at all, so the
+  # decision is made here, on a GitHub-hosted runner, before the review job is
+  # even scheduled.
+  #
+  # It says no for ONE reason only, `policy.push_skip`, which `reviewbot run`
+  # applies again on the runner. Everything else -- trust, CI, an unchanged
+  # head -- stays with the review job. It reads the pull request, the base
+  # branch's policy and the comments, and nothing from the pull request's
+  # head: no checkout, no code. Under `review_on_push: always`, the default,
+  # it always answers yes.
+  #
+  # FAILS TOWARD REVIEWING. The review job runs unless this job said `false`,
+  # so a failed or skipped preflight leaves the review job deciding exactly as
+  # it did before this job existed.
+  #
+  # COST: on a PRIVATE repository a GitHub-hosted job uses Actions minutes
+  # (about one billed minute per CI completion). On a public one it is free.
+  preflight:
+    if: >
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    outputs:
+      review: ${{ steps.decide.outputs.review }}
+    steps:
+      - name: Mint the App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.CODE_REVIEW_APP_ID || inputs.app-id }}
+          private-key: ${{ secrets.CODE_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Check out the bot
+        uses: actions/checkout@v7
+        with:
+          repository: MarketData-App/code-review-bot
+          ref: ${{ inputs.bot-ref }}
+          path: bot
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the bot
+        run: uv sync --project bot
+
+      # `|| echo review=true`: the command writes `review=` on every path that
+      # exits 0, so the fallback runs only when nothing was written, and a
+      # broken preflight starts the review job rather than silently none.
+      - name: Decide whether this push starts a review
+        id: decide
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          uv run --project bot reviewbot preflight \
+            --event "$GITHUB_EVENT_PATH" \
+            --repo "$GITHUB_REPOSITORY" \
+            || echo "review=true" >> "$GITHUB_OUTPUT"
+
   review:
+    # `!cancelled()` makes this job run when the preflight job was skipped
+    # (every trigger but a green workflow_run) or failed; without a status
+    # function, a skipped `needs` job skips this one too. Only an explicit
+    # `false` from the preflight job keeps it off the runner.
+    needs: preflight
     # A CHEAP FIRST FILTER, NOT THE GATE.
     #
     # This expression cannot see the pull request's author on an issue_comment
@@ -116,11 +194,13 @@ jobs:
     # untrusted pull request, which must not reach the private credential
     # store at all.
     if: >
-      github.event_name == 'pull_request_target' ||
-      github.event_name == 'issue_comment' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success')
+      !cancelled() &&
+      needs.preflight.outputs.review != 'false' &&
+      (github.event_name == 'pull_request_target' ||
+       github.event_name == 'issue_comment' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success'))
     # Unset means derive it, and deriving is what stops a caller landing in the
     # silent queue described on the input above.
     runs-on: ${{ fromJSON(inputs.runs-on != '' && inputs.runs-on || (github.event.repository.private && '["self-hosted", "marketdata-docker"]' || '["ubuntu-latest"]')) }}

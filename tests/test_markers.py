@@ -61,3 +61,20 @@ def test_state_json_stays_on_one_line():
     # A multi-line JSON blob would break the single-line regex the parser uses.
     state = dict(STATE, finding_ids=[f"{i:08x}" for i in range(40)])
     assert len([x for x in markers.emit(state).splitlines() if x.strip()]) == 2
+
+
+def test_only_this_apps_comment_is_its_own():
+    body = "review\n" + markers.emit(STATE)
+    assert markers.is_own_comment({"user": {"login": "marketdata-code-review[bot]"}, "body": body})
+    assert not markers.is_own_comment({"user": {"login": "mallory"}, "body": body})
+    assert not markers.is_own_comment({"user": {"login": "other-app[bot]"}, "body": body})
+    assert not markers.is_own_comment(
+        {"user": {"login": "marketdata-code-review[bot]"}, "body": "hi"}
+    )
+    assert not markers.is_own_comment(None)
+
+
+def test_the_login_is_the_handle_the_bot_answers_to():
+    from reviewbot import policy
+
+    assert markers.BOT_LOGIN == policy.HANDLE.removeprefix("@") + "[bot]"
