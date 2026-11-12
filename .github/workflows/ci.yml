@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
 
+# Read only, whatever the repository setting is. This workflow runs the pull
+# request's own code (its tests, conftest.py, pyproject.toml); with a token
+# that can write, that code could approve or merge its own pull request.
+# tests/test_workflow.py asserts it.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

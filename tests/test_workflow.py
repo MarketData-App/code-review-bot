@@ -142,6 +142,17 @@ def test_the_self_review_watches_this_repositorys_own_ci_workflow():
     assert ci["name"] in SELF[ON]["workflow_run"]["workflows"]
 
 
+def test_ci_runs_the_pull_requests_code_with_a_read_only_token():
+    """CI runs the pull request's own code (its tests, conftest.py,
+    pyproject.toml). With the repository's default token that code could
+    approve or merge its own pull request, so the workflow asks for read only,
+    whatever the repository setting is."""
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    assert ci["permissions"] == {"contents": "read"}
+    for job in ci["jobs"].values():
+        assert job.get("permissions", {"contents": "read"}) == {"contents": "read"}
+
+
 def test_the_self_review_ignores_ci_on_the_default_branch():
     # workflow_run fires for the push to main too. Without this the merge of
     # every pull request starts a review that mints tokens and finds nothing.
