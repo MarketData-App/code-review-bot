@@ -115,6 +115,15 @@ def test_a_request_older_than_the_last_review_was_already_served():
     assert decide(api)["review"] is False
 
 
+def test_a_marker_pasted_after_the_review_does_not_turn_reviews_back_on():
+    pasted = comment(
+        "quoting it\n<!-- marketdata-code-review -->\n"
+        '<!-- reviewbot-state: {"reviewed_sha":"x","revision":1} -->'
+    )
+    api, _ = api_with(FIRST, comments=[bot_review(), pasted])
+    assert decide(api)["review"] is False
+
+
 def test_a_malformed_policy_goes_to_the_review_job_which_reports_it():
     api, _ = api_with("review_on_push: sometimes\n")
     decision = decide(api)

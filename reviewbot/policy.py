@@ -12,9 +12,6 @@ from reviewbot import markers
 from reviewbot.facts import PRFacts, all_match, matches_any
 
 HANDLE = "@marketdata-code-review"
-# The login GitHub gives the App's own comments. A person cannot register a
-# login with brackets, and another App has a different slug.
-BOT_LOGIN = HANDLE.removeprefix("@") + "[bot]"
 
 LABEL_READY = "review: ready"
 LABEL_CHANGES = "review: needs changes"
@@ -152,14 +149,9 @@ def is_bot_review(comment: dict | None) -> bool:
     """True when `comment` is a review the bot itself posted.
 
     Anyone who can comment can paste the marker, and under `first` a pasted
-    marker would stop the first review. So the author must be this App: an App
-    account, which a person cannot post as, with this App's login, which
-    another installed App does not have.
+    marker would stop the first review. So the author must be this App.
     """
-    if not comment or not markers.is_bot_comment(comment.get("body")):
-        return False
-    user = comment.get("user") or {}
-    if user.get("type") != "Bot" or (user.get("login") or "").lower() != BOT_LOGIN:
+    if not markers.is_own_comment(comment):
         return False
     return bool(markers.parse(comment.get("body")).get("reviewed_sha"))
 

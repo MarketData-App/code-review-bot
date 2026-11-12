@@ -69,12 +69,14 @@ def review_thread(comments: list[dict]) -> tuple[dict | None, list[dict]]:
     """The bot's review comment, and the other comments that came after it.
 
     `comments` is a pull request's issue comments as the API returns them.
-    Returns the last comment that carries the marker, or None, and the later
-    comments shaped as `PRFacts.comments_since` holds them. Raises nothing.
+    Returns the last comment this App wrote with the marker, or None, and the
+    later comments shaped as `PRFacts.comments_since` holds them. A marker
+    that someone else pasted is neither the review nor a later comment.
+    Raises nothing.
     """
     previous = None
     for comment in comments:
-        if markers.is_bot_comment(comment.get("body")):
+        if markers.is_own_comment(comment):
             previous = comment
     cutoff = previous.get("updated_at") if previous else None
     since = [
