@@ -100,7 +100,7 @@ def is_automatic(event: dict) -> bool:
 def preflight(*, event: dict, repo: str, token: str, api=None) -> dict:
     """Decide on a GitHub-hosted runner whether this CI completion starts the
     review job, so that a push which will not be reviewed never queues for the
-    self-hosted runner (issue #27).
+    self-hosted runner.
 
     `event` is the `workflow_run` payload, `repo` and `token` name the
     repository and its App token, and `api` replaces the GitHub client. It

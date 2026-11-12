@@ -18,7 +18,7 @@ MERGE_METHODS = ("squash", "merge", "rebase")
 EFFORTS = ("low", "medium", "high")
 # When a push to a pull request starts a review. `first` reviews a push only
 # until the bot has reviewed the pull request once; after that a review starts
-# only when a person asks (issue #27).
+# only when a person asks.
 REVIEW_ON_PUSH = ("always", "first")
 
 # The only associations a repository may declare trusted. NONE, CONTRIBUTOR

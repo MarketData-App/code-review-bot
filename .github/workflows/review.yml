@@ -83,7 +83,7 @@ on:
         required: false
 
 jobs:
-  # DECIDED BEFORE THE SELF-HOSTED RUNNER (issue #27). Every CI workflow a
+  # DECIDED BEFORE THE SELF-HOSTED RUNNER. Every CI workflow a
   # caller names sends its own workflow_run, so one push to MarketData-App/api
   # starts three review runs, and on a private repository each one queued for
   # the single shared self-hosted runner before it could find out that it had

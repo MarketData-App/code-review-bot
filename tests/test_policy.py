@@ -763,6 +763,13 @@ def test_a_pasted_marker_is_not_a_review():
     assert policy.should_skip(pr, config.load(FIRST), automatic=True) is None
 
 
+def test_another_apps_marker_is_not_a_review():
+    """Any installed App can comment as a Bot. Only this App's login counts."""
+    forged = bot_comment(login="other-app[bot]", kind="Bot")
+    pr = make_pr(head_sha="b" * 40, previous_comment=forged, previous_state=REVIEWED)
+    assert policy.should_skip(pr, config.load(FIRST), automatic=True) is None
+
+
 def test_the_push_rule_reads_the_same_facts_the_preflight_job_reads():
     """`push_skip` is the one rule both the preflight job and `run` apply."""
     pol = config.load(FIRST)
