@@ -2,7 +2,8 @@
 
 An automated pull-request reviewer for the Market Data repositories. One
 durable review comment per PR, findings with file and line, a verdict, a proof
-gate, and a re-review on every push.
+gate, and a re-review on every push -- or, with `review_on_push: first`, only
+on the first push and then when a person asks.
 
 The engine is shared. The shape of each review comes from the target repo,
 through two optional files on the base branch:

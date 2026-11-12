@@ -20,7 +20,7 @@ from reviewbot import policy as policy_mod
 from reviewbot import result as result_mod
 from reviewbot.backends import base as backends
 from reviewbot.config import JOB_BUDGET_MINUTES, JOB_OVERHEAD_MINUTES
-from reviewbot.github import FAILED_CONCLUSIONS, GitHub, GitHubError
+from reviewbot.github import FAILED_CONCLUSIONS, GitHub, GitHubError, review_thread
 from reviewbot.redact import scrub
 
 CONFIG_DIR = ".github/code-review"
@@ -83,6 +83,56 @@ def _resolve_pr(event: dict, api, pr_number: int | None) -> int | None:
     if isinstance(run, dict) and run.get("head_sha") and api is not None:
         return api.pull_for_sha(str(run["head_sha"]))
     return None
+
+
+def is_automatic(event: dict) -> bool:
+    """True when a push started this run, and no person asked for it.
+
+    `event` is the triggering payload. A CI completion (`workflow_run`) and a
+    `pull_request_target` event are automatic; an `issue_comment` and a
+    `workflow_dispatch` are a person asking. Raises nothing.
+    """
+    return isinstance(event.get("workflow_run"), dict) or isinstance(
+        event.get("pull_request"), dict
+    )
+
+
+def preflight(*, event: dict, repo: str, token: str, api=None) -> dict:
+    """Decide on a GitHub-hosted runner whether this CI completion starts the
+    review job, so that a push which will not be reviewed never queues for the
+    self-hosted runner (issue #27).
+
+    `event` is the `workflow_run` payload, `repo` and `token` name the
+    repository and its App token, and `api` replaces the GitHub client. It
+    says no for one reason only, `policy_mod.push_skip`, the rule `reviewbot
+    run` applies too. What it cannot read, it leaves to the review job, which
+    then decides as it always has. Returns {"review": bool, "reason": str};
+    raises nothing.
+    """
+    try:
+        api = api or GitHub(repo, token)
+        number = _resolve_pr(event, api, None)
+        if number is None:
+            return {
+                "review": True,
+                "reason": "the event names no pull request; the review job decides",
+            }
+        pull = api.pull_request(number) or {}
+        base_ref = (pull.get("base") or {}).get("ref") or "HEAD"
+        policy = config.load(api.file_at_ref(POLICY_PATH, base_ref))
+        if policy["review_on_push"] != "first":
+            return {"review": True, "reason": f"review_on_push is {policy['review_on_push']}"}
+        previous, since = review_thread(api.issue_comments(number))
+        skip = policy_mod.push_skip(policy, previous, since)
+    except Exception as exc:  # noqa: BLE001 - a preflight problem must never stop a review
+        return {
+            "review": True,
+            "reason": f"could not decide ({type(exc).__name__}: {scrub(str(exc))}); "
+            "the review job decides",
+        }
+    if skip:
+        return {"review": False, "reason": f"#{number}: {skip}"}
+    return {"review": True, "reason": f"#{number} has no review yet, or a person asked for one"}
 
 
 def refused(reason: str) -> dict:
@@ -440,7 +490,7 @@ def run(
         )
         return 0
 
-    skip = policy_mod.should_skip(pr, policy, force=force)
+    skip = policy_mod.should_skip(pr, policy, force=force, automatic=is_automatic(event))
     if skip:
         print(f"reviewbot: skipped, {skip}")
         return 0
@@ -1040,6 +1090,21 @@ def main(argv: list[str] | None = None) -> int:
         help="owner/name of the repository",
     )
 
+    preflighter = sub.add_parser(
+        "preflight",
+        help="decide on a hosted runner whether a CI completion starts the review job",
+    )
+    preflighter.add_argument(
+        "--event",
+        default=os.environ.get("GITHUB_EVENT_PATH"),
+        help="path to the GitHub event payload",
+    )
+    preflighter.add_argument(
+        "--repo",
+        default=os.environ.get("GITHUB_REPOSITORY"),
+        help="owner/name of the repository",
+    )
+
     waiter = sub.add_parser(
         "wait-for-checks",
         help="wait for the checks the policy lists before the review reads CI",
@@ -1163,6 +1228,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.event and os.path.exists(args.event):
         with open(args.event) as handle:
             event = json.load(handle)
+
+    if args.command == "preflight":
+        decision = preflight(event=event, repo=args.repo, token=token)
+        print(f"reviewbot preflight: {scrub(decision['reason'])}")
+        _say_output("review", "true" if decision["review"] else "false")
+        return 0
 
     if args.command == "gate":
         org_token = os.environ.get("REVIEWBOT_ORG_TOKEN")

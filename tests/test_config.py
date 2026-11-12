@@ -185,3 +185,46 @@ def test_the_review_cannot_wait_for_its_own_check(text):
     """The wait never sees the review's own check, so listing it is refused."""
     with pytest.raises(config.PolicyError, match="own check"):
         config.load(text)
+
+
+# --- review_on_push (issue #27) ---------------------------------------------
+
+
+def test_a_push_is_reviewed_by_default():
+    """`always` is the behaviour every repository had before the key existed."""
+    assert config.defaults()["review_on_push"] == "always"
+
+
+def test_a_repository_may_review_only_the_first_push():
+    assert config.load("review_on_push: first\n")["review_on_push"] == "first"
+
+
+def test_an_unknown_review_on_push_value_is_refused():
+    with pytest.raises(config.PolicyError, match="review_on_push"):
+        config.load("review_on_push: never\n")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "review_on_push: first\nauto_approve: true\n",
+        "review_on_push: first\nauto_merge:\n  enabled: true\n  authors: [alice]\n",
+    ],
+)
+def test_first_cannot_carry_an_approval_past_an_unreviewed_push(text):
+    """Under `first`, no review reads a later push. An approval or an armed
+    auto-merge from the first review would then merge commits nobody reviewed,
+    so the combination is refused rather than allowed to weaken the gate."""
+    with pytest.raises(config.PolicyError, match="review_on_push"):
+        config.load(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "auto_approve: true\n",
+        "auto_merge:\n  enabled: true\n  authors: [alice]\n",
+    ],
+)
+def test_always_still_allows_approval_and_auto_merge(text):
+    config.load(text)

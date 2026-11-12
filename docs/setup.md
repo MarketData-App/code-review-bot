@@ -273,6 +273,31 @@ wait, and then the review reads CI without it: that is a pull request whose
 coverage never reached Codecov, or every review in a repository that does not
 report to it and has not turned the wait off.
 
+**When a push starts a review.** By default every push whose CI is green gets
+a review (`review_on_push: always`). A repository with large diffs, or one on
+the shared self-hosted runner, can review a pull request automatically only
+once:
+
+```yaml
+review_on_push: first
+```
+
+Then the first green push of a pull request is reviewed as before. After the
+bot has posted its review comment, a push starts no review job: a small
+`preflight` job on a GitHub-hosted runner reads the policy and the comments and
+stops the run before it reaches the review job's runner. A new review of the
+current head starts when a person comments `@marketdata-code-review re-review`
+(when CI is green) or dispatches the workflow. A `re-review` that arrives
+while CI is still running is served by the CI run that ends next. The caller
+workflow needs no change.
+
+Under `first`, the review comment, its check run and its labels describe the
+commit the comment names, not later pushes. So `first` cannot be combined with
+`auto_approve` or `auto_merge.enabled`: an approval or an armed auto-merge
+from the first review would merge commits that no review has read. On a
+private repository the preflight job uses Actions minutes, about one billed
+minute per CI completion.
+
 ### 5. Leave the check advisory until you trust it
 
 The `Code review` check is not a required status check anywhere today, so a

@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass, field
 
 from reviewbot import findings as findings_mod
+from reviewbot import markers
 from reviewbot.facts import PRFacts, all_match, matches_any
 
 HANDLE = "@marketdata-code-review"
@@ -59,8 +60,15 @@ def is_trusted(author: str, association: str, policy: dict) -> bool:
     return (association or "").upper() in (policy["trusted_associations"] or [])
 
 
-def should_skip(pr: PRFacts, policy: dict, force: bool = False) -> str | None:
+def should_skip(
+    pr: PRFacts, policy: dict, force: bool = False, automatic: bool = False
+) -> str | None:
     """A reason to write nothing at all, or None to review.
+
+    `automatic` is True when a push started this run (a CI completion or a
+    pull_request_target event) and False when a person asked for it with a
+    comment or a dispatch. Only an automatic run is subject to
+    `review_on_push`.
 
     Trust is NOT decided here. It needs an API call that this module must not
     make, and deciding it from `author_association` alone is what let the gate
@@ -107,7 +115,48 @@ def should_skip(pr: PRFacts, policy: dict, force: bool = False) -> str | None:
     if not force and pr.previous_state.get("reviewed_sha") == pr.head_sha:
         if not any(is_bot_command(c.get("body", "")) for c in pr.comments_since or []):
             return "this commit has already been reviewed"
+    if automatic and not force:
+        return push_skip(policy, pr.previous_comment, pr.comments_since)
     return None
+
+
+def push_skip(
+    policy: dict, previous_comment: dict | None, comments_since: list[dict]
+) -> str | None:
+    """A reason for a push not to start a review under `review_on_push: first`.
+
+    `previous_comment` is the bot's review comment as the issues API returns
+    it, or None, and `comments_since` holds the comments that came after it.
+    The preflight job and `reviewbot run` both apply this one rule, so the
+    job that skips before the self-hosted runner and the run that skips on it
+    cannot disagree. Returns None when the push may start a review.
+    """
+    if policy["review_on_push"] != "first":
+        return None
+    if not is_bot_review(previous_comment):
+        return None
+    # A person who asked while CI was still running got a skip for CI, and
+    # the CI run that ends next is the only thing left to do that review.
+    if any(is_bot_command(c.get("body", "")) for c in comments_since or []):
+        return None
+    return (
+        "the pull request already has a review and review_on_push is first; "
+        f"comment `{HANDLE} re-review` for a new one"
+    )
+
+
+def is_bot_review(comment: dict | None) -> bool:
+    """True when `comment` is a review the bot itself posted.
+
+    Anyone who can comment can paste the marker, and under `first` a pasted
+    marker would stop the first review. So the author must be an App, which a
+    person cannot post as.
+    """
+    if not comment or not markers.is_bot_comment(comment.get("body")):
+        return False
+    if (comment.get("user") or {}).get("type") != "Bot":
+        return False
+    return bool(markers.parse(comment.get("body")).get("reviewed_sha"))
 
 
 def proof_applies(pr: PRFacts, policy: dict) -> bool:
