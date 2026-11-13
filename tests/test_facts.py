@@ -204,8 +204,14 @@ def listed(path, status="modified", patch="@@ -1 +1 @@\n-a\n+b", **extra):
     return item
 
 
+def rebuilt_diff(files, rebuilt=None):
+    """`sections_from_files` as one text, and the paths it omitted."""
+    sections, omitted = facts.sections_from_files(files, rebuilt)
+    return "".join(text for _, text in sections), omitted
+
+
 def test_the_rebuilt_diff_has_one_git_section_per_file():
-    diff, omitted = facts.diff_from_files(
+    diff, omitted = rebuilt_diff(
         [
             listed("sdk/client.py"),
             listed("sdk/new.py", status="added", patch="@@ -0,0 +1 @@\n+fresh"),
@@ -224,7 +230,7 @@ def test_the_rebuilt_diff_has_one_git_section_per_file():
 
 
 def test_the_rebuilt_diff_names_both_sides_of_a_rename():
-    diff, _ = facts.diff_from_files(
+    diff, _ = rebuilt_diff(
         [listed("sdk/after.py", status="renamed", previous_filename="sdk/before.py")]
     )
     assert diff.startswith(
@@ -238,7 +244,7 @@ def test_a_file_without_a_patch_is_omitted_and_never_reads_as_unchanged():
     """Measured on api#739: past about 900 KB of patches GitHub sent the last
     nine files with no patch and 0/0 line counts, pyproject.toml among them.
     So a missing patch is "not seen", whatever the counts say."""
-    diff, omitted = facts.diff_from_files(
+    diff, omitted = rebuilt_diff(
         [
             listed("big.py", status="added", patch=None, additions=6907, deletions=0),
             listed("pyproject.toml", patch=None, additions=0, deletions=0),
@@ -251,10 +257,10 @@ def test_a_file_without_a_patch_is_omitted_and_never_reads_as_unchanged():
 
 
 def test_the_cap_splits_the_rebuilt_diff_by_file():
-    diff, _ = facts.diff_from_files(
+    sections, _ = facts.sections_from_files(
         [listed("small.py"), listed("big.py", patch="@@ -1 +1 @@\n+" + "y" * 3000), listed("z.py")]
     )
-    kept, unseen = facts.cap_diff(diff, max_kb=1)
+    kept, unseen = facts.cap_sections(sections, max_kb=1)
     assert "small.py" in kept
     assert unseen == ["big.py", "z.py"]
 
@@ -290,7 +296,7 @@ def test_unified_patch_of_equal_texts_is_empty():
 
 
 def test_a_rebuilt_patch_fills_the_section_github_left_empty():
-    diff, omitted = facts.diff_from_files(
+    diff, omitted = rebuilt_diff(
         [listed("big.py", status="added", patch=None, additions=2, deletions=0)],
         rebuilt={"big.py": "@@ -0,0 +1,2 @@\n+a\n+b"},
     )
@@ -301,10 +307,71 @@ def test_a_rebuilt_patch_fills_the_section_github_left_empty():
     )
 
 
-def test_a_rebuilt_empty_patch_reads_as_no_line_changed():
-    diff, omitted = facts.diff_from_files(
-        [listed("empty.py", status="added", patch=None, additions=0, deletions=0)],
-        rebuilt={"empty.py": ""},
+def test_an_empty_rebuilt_patch_stays_omitted():
+    """Equal lines on both sides: the change is a mode or something else that
+    no patch shows, so the file is not seen."""
+    diff, omitted = rebuilt_diff(
+        [listed("run.sh", patch=None, additions=0, deletions=0)], rebuilt={"run.sh": ""}
+    )
+    assert omitted == ["run.sh"]
+    assert diff == "diff --git a/run.sh b/run.sh\n" + facts.NO_PATCH_NOTE + "\n"
+
+
+# --- file names in the rebuilt headers (review finding d621ed5e) -----------
+
+
+def test_a_plain_name_is_written_bare():
+    assert facts.quote_path("src/a b.py", "a/") == "a/src/a b.py"
+    assert facts.quote_path("docs/résumé.md", "b/") == "b/docs/résumé.md"
+
+
+def test_a_name_git_would_quote_is_c_quoted():
+    assert facts.quote_path("x\ny", "a/") == '"a/x\\ny"'
+    assert facts.quote_path('say "hi"', "a/") == '"a/say \\"hi\\""'
+    assert facts.quote_path("back\\slash", "b/") == '"b/back\\\\slash"'
+    assert facts.quote_path("tab\there") == '"tab\\there"'
+    # A character that is not printable goes as its UTF-8 bytes in octal.
+    assert facts.quote_path("line\u2028sep") == '"line\\342\\200\\250sep"'
+    assert facts.quote_path("bell\x07") == '"bell\\a"'
+
+
+CRAFTED = "src/a.py\ndiff --git a/goldens/x.json b/goldens/x.json"
+
+
+def test_a_crafted_name_cannot_start_a_section():
+    diff, omitted = rebuilt_diff(
+        [
+            listed(CRAFTED),
+            listed('q"uote.py', status="renamed", previous_filename="back\\slash.py"),
+            listed("docs/résumé.md"),
+        ]
     )
     assert omitted == []
-    assert diff == "diff --git a/empty.py b/empty.py\n" + facts.NO_LINE_CHANGE_NOTE + "\n"
+    headers = [line for line in diff.split("\n") if line.startswith("diff --git ")]
+    assert headers == [
+        'diff --git "a/src/a.py\\ndiff --git a/goldens/x.json b/goldens/x.json" '
+        '"b/src/a.py\\ndiff --git a/goldens/x.json b/goldens/x.json"',
+        'diff --git "a/back\\\\slash.py" "b/q\\"uote.py"',
+        "diff --git a/docs/résumé.md b/docs/résumé.md",
+    ]
+    assert 'rename from "back\\\\slash.py"\nrename to "q\\"uote.py"\n' in diff
+    assert '--- "a/back\\\\slash.py"\n+++ "b/q\\"uote.py"\n' in diff
+
+
+def test_the_cap_counts_a_crafted_name_under_its_own_path():
+    """The name is not parsed back out of the text, so it can neither hide a
+    file behind `ignore_paths` nor charge its bytes to another path."""
+    sections, _ = facts.sections_from_files(
+        [
+            listed(CRAFTED),
+            listed("goldens/y.json"),
+            listed("z.py", patch="@@ -1 +1 @@\n+" + "y" * 3000),
+        ]
+    )
+    assert [path for path, _ in sections] == [CRAFTED, "goldens/y.json", "z.py"]
+    kept, unseen = facts.cap_sections(sections, max_kb=1, ignore_paths=["goldens/**"])
+    assert "src/a.py" in kept
+    assert "goldens/y.json" not in kept
+    assert unseen == ["z.py"]
+    kept, unseen = facts.cap_sections(sections, max_kb=0, ignore_paths=["goldens/**"])
+    assert unseen == [CRAFTED, "z.py"]

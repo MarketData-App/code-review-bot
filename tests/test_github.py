@@ -1123,3 +1123,35 @@ def test_no_more_than_max_file_reads_files_are_read(api, transport, monkeypatch)
     pr = api.gather(7, max_diff_kb=400)
     assert pr.unseen_files == ["c.py"]
     assert "/repos/MarketData-App/api/contents/c.py?ref=abc" not in reads(transport)
+
+
+def test_a_file_whose_two_versions_have_the_same_lines_stays_unseen(api, transport):
+    """Review finding f21070e6: a change of mode only. The contents API shows
+    no mode, so the change itself was never seen."""
+    large_pr_routes(transport, [patched("run.sh", patch=None, additions=0)], pull=FORKED)
+    merge_base(transport)
+    contents(transport, "run.sh", MERGE_BASE, text="echo hi\n")
+    contents(transport, "run.sh", "abc", text="echo hi\n")
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == ["run.sh"]
+    assert "diff --git a/run.sh b/run.sh\n" + facts.NO_PATCH_NOTE + "\n" in pr.diff
+
+
+def test_a_crafted_file_name_cannot_start_a_section_or_dodge_ignore_paths(api, transport):
+    """Review finding d621ed5e, on a section built from GitHub's own patch."""
+    crafted = "src/a.py\ndiff --git a/goldens/x.json b/goldens/x.json"
+    large_pr_routes(
+        transport,
+        [
+            patched(crafted, "@@ -1 +1 @@\n-a\n+" + "y" * 3000),
+            patched("goldens/y.json"),
+            patched("z.py"),
+        ],
+        pull=FORKED,
+    )
+    pr = api.gather(7, max_diff_kb=1, ignore_paths=["goldens/**"])
+    assert [ln for ln in pr.diff.split("\n") if ln.startswith("diff --git a/goldens")] == []
+    # Over the budget under its OWN name, and z.py after it, as cap_diff rules.
+    # The name is quoted on its way to the brief and the comment.
+    assert pr.unseen_files == [facts.quote_path(crafted), "z.py"]
+    assert "\n" not in pr.unseen_files[0]

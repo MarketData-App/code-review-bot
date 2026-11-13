@@ -14,7 +14,15 @@ from dataclasses import dataclass
 import requests
 
 from reviewbot import markers
-from reviewbot.facts import PRFacts, cap_diff, diff_from_files, matches_any, unified_patch
+from reviewbot.facts import (
+    PRFacts,
+    cap_diff,
+    cap_sections,
+    matches_any,
+    quote_path,
+    sections_from_files,
+    unified_patch,
+)
 
 API = "https://api.github.com"
 ANNOTATION_LIMIT = 50
@@ -216,7 +224,7 @@ class GitHub:
         `too_large` answer falls back to the diff rebuilt from `listing`
         (issue #32); every other error raises GitHubError as before. A file
         that the listing carries with no patch is read from the two commits
-        (`_missing_patches`). `cap_diff` applies to either diff with the same
+        (`_missing_patches`). The same cap applies to either diff, with the same
         `max_diff_kb` and `ignore_paths`, so the policy, not GitHub, still
         decides what is too large to review. Raises GitHubError for a read that
         fails with anything but 404 or `too_large`.
@@ -227,9 +235,9 @@ class GitHub:
             if not diff_too_large(exc):
                 raise
         read = self._missing_patches(listing, pull, max_diff_kb * 1024, ignore_paths or [])
-        rebuilt, omitted = diff_from_files(listing, read)
-        diff, unseen = cap_diff(rebuilt, max_diff_kb, ignore_paths)
-        # cap_diff keeps a no-patch file's note, but its changes were never
+        sections, omitted = sections_from_files(listing, read)
+        diff, unseen = cap_sections(sections, max_diff_kb, ignore_paths)
+        # The cap keeps a no-patch file's note, but its changes were never
         # seen. An ignored path stays out, as it does from the real diff.
         unseen += [
             path
@@ -243,6 +251,9 @@ class GitHub:
             missing = 0
         if missing > 0:
             unseen.append(f"{missing} more files that GitHub's file list does not return")
+        # The names go on into the brief and the review comment. Quoted as the
+        # diff headers quote them, so no file name brings a line break there.
+        unseen = [quote_path(path) for path in unseen]
         print(
             f"reviewbot: GitHub's diff media type answered 406 too_large for #{number}; "
             f"rebuilt the diff from the patches of {len(listing)} listed files "
@@ -258,10 +269,11 @@ class GitHub:
         `listing` is the `pulls/N/files` entries, `pull` the pull request
         object, `budget` the diff cap in bytes. The new side is read at the
         head commit, the old side at the merge base, as GitHub's own diff is
-        built. Returns {path: hunks}, "" for a file whose two versions have the
-        same lines. A file is left out, and so stays unseen, when a side cannot
-        be read as text (`_text_at`), when there is no merge base, or when the
-        patches before it already pass the budget, since `cap_diff` drops every
+        built. Returns {path: hunks}. A file is left out, and so stays unseen,
+        when its two versions have the same lines (a change of mode, which the
+        contents API does not show), when a side cannot be read as text
+        (`_text_at`), when there is no merge base, or when the
+        patches before it already pass the budget, since the cap drops every
         file after the first one that does not fit. An ignored path is never
         read, and past `MAX_FILE_READS` files nothing more is read. Raises
         GitHubError for a read that fails with anything but 404 or `too_large`.
@@ -296,8 +308,13 @@ class GitHub:
             new = "" if status == "removed" else self._text_at(path, head)
             if new is None:
                 continue
-            out[path] = unified_patch(old, new)
-            used += len(out[path].encode("utf-8"))
+            hunks = unified_patch(old, new)
+            if not hunks:
+                # The same lines on both sides: the change is a mode or
+                # something else the contents API does not show. Unseen.
+                continue
+            out[path] = hunks
+            used += len(hunks.encode("utf-8"))
         return out
 
     def _merge_base(self, base: str, head: str) -> str:
