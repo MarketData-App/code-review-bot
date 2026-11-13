@@ -30,7 +30,7 @@ RETRY_STATUSES = (403, 429, 500, 502, 503, 504)
 MAX_ATTEMPTS = 5
 # The most files the rebuilt diff reads from the commits (two reads each). It
 # keeps one huge pull request from spending the installation's rate limit;
-# a file past it stays unseen. api#739 needed 10.
+# a file past it stays unseen.
 MAX_FILE_READS = 200
 
 # The check-run conclusions that make CI red.
@@ -221,8 +221,8 @@ class GitHub:
 
         `listing` is the pull request's `pulls/N/files` entries and `pull` the
         pull request object. The diff media type is asked first. Only its 406
-        `too_large` answer falls back to the diff rebuilt from `listing`
-        (issue #32); every other error raises GitHubError as before. A file
+        `too_large` answer falls back to the diff rebuilt from `listing`;
+        every other error raises GitHubError as before. A file
         that the listing carries with no patch is read from the two commits
         (`_missing_patches`). The same cap applies to either diff, with the same
         `max_diff_kb` and `ignore_paths`, so the policy, not GitHub, still

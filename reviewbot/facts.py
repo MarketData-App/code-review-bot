@@ -188,20 +188,19 @@ def sections_from_files(
     """A unified diff rebuilt from the per-file patches of `pulls/N/files`, file by file.
 
     The fallback for a pull request whose diff media type answers 406 because
-    the diff is too large (issue #32). `files` is that listing as the API
-    returns it. `rebuilt` maps the path of a file that GitHub sent with no
+    the diff is too large. `files` is that listing as the API returns it. `rebuilt` maps the path of a file that GitHub sent with no
     patch to the hunks read from the two commits instead (`unified_patch`).
     Returns [(path, section)], one `diff --git` section per file in listing
     order, for `cap_sections`; and the paths that still have no patch. Such a
     file still gets a section, with `NO_PATCH_NOTE` in place of its hunks.
     Every path in a header goes through `quote_path`. Raises nothing.
 
-    A missing or empty patch is never read as "no change". Measured on
-    api#739: past about 900 KB of patches GitHub sent the last nine files with
-    no patch and `additions: 0, deletions: 0`, `pyproject.toml` among them. A
-    file that could not be read as text, a binary file among them, stays
-    omitted, and so does one whose two versions have the same lines: its
-    change is a mode or another thing that no patch shows.
+    A missing or empty patch is never read as "no change". Past about 900 KB
+    of patches GitHub sends every later file with no patch and with
+    `additions: 0, deletions: 0`, however much it changed. A file that could
+    not be read as text, a binary file among them, stays omitted, and so does
+    one whose two versions have the same lines: its change is a mode or
+    another thing that no patch shows.
     """
     rebuilt = rebuilt or {}
     sections, omitted = [], []
