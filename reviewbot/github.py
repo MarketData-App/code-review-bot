@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import requests
 
 from reviewbot import markers
-from reviewbot.facts import PRFacts, cap_diff
+from reviewbot.facts import PRFacts, cap_diff, diff_from_files, matches_any
 
 API = "https://api.github.com"
 ANNOTATION_LIMIT = 50
@@ -43,7 +43,37 @@ mutation($pr: ID!) {
 
 
 class GitHubError(RuntimeError):
-    """A GitHub call failed after its retries."""
+    """A GitHub call failed after its retries.
+
+    `status` is GitHub's last HTTP status and `detail` its answer with the
+    token scrubbed out; None and "" when the error did not come from a reply.
+    """
+
+    def __init__(self, message: str, status: int | None = None, detail: str = ""):
+        super().__init__(message)
+        self.status = status
+        self.detail = detail
+
+
+def diff_too_large(exc: GitHubError) -> bool:
+    """True for the one answer the diff fallback handles: 406 `too_large`.
+
+    GitHub's diff media type refuses a diff over its line or file limit with
+    406 and `"code": "too_large"`. Any other 406, and any other status, is
+    a real failure and must fail the review as before.
+    """
+    return exc.status == 406 and (
+        '"too_large"' in exc.detail or "the diff exceeded the maximum number of" in exc.detail
+    )
+
+
+def _changed_file(item: dict) -> dict:
+    return {
+        "path": item["filename"],
+        "status": item["status"],
+        "additions": item.get("additions", 0),
+        "deletions": item.get("deletions", 0),
+    }
 
 
 @dataclass(frozen=True)
@@ -129,8 +159,11 @@ class GitHub:
             if reply.status not in RETRY_STATUSES or attempt == MAX_ATTEMPTS:
                 break
             self._sleep(min(2**attempt, 30))
+        detail = self._scrub(last.text)
         raise GitHubError(
-            f"{method} {path} failed with {last.status}: {self._scrub(last.text)[:300]}"
+            f"{method} {path} failed with {last.status}: {detail[:300]}",
+            status=last.status,
+            detail=detail[:2000],
         )
 
     def _paged(self, path: str) -> list:
@@ -150,16 +183,11 @@ class GitHub:
     def pull_request(self, number: int) -> dict:
         return self._request("GET", f"/repos/{self.repo}/pulls/{number}").data
 
+    def _file_listing(self, number: int) -> list[dict]:
+        return self._paged(f"/repos/{self.repo}/pulls/{number}/files")
+
     def changed_files(self, number: int) -> list[dict]:
-        return [
-            {
-                "path": item["filename"],
-                "status": item["status"],
-                "additions": item.get("additions", 0),
-                "deletions": item.get("deletions", 0),
-            }
-            for item in self._paged(f"/repos/{self.repo}/pulls/{number}/files")
-        ]
+        return [_changed_file(item) for item in self._file_listing(number)]
 
     def diff(self, number: int) -> str:
         reply = self._request(
@@ -168,6 +196,52 @@ class GitHub:
             accept="application/vnd.github.v3.diff",
         )
         return reply.text or ""
+
+    def capped_diff(
+        self,
+        number: int,
+        listing: list[dict],
+        listed_count,
+        max_diff_kb: int,
+        ignore_paths: list[str] | None = None,
+    ) -> tuple[str, list[str]]:
+        """The diff after the size policy, and the files it does not show.
+
+        `listing` is the pull request's `pulls/N/files` entries and
+        `listed_count` the `changed_files` count on the pull request object.
+        The diff media type is asked first. Only its 406 `too_large` answer
+        falls back to the diff rebuilt from `listing` (issue #32); every other
+        error raises GitHubError as before. `cap_diff` applies to either diff
+        with the same `max_diff_kb` and `ignore_paths`, so the policy, not
+        GitHub, still decides what is too large to review.
+        """
+        try:
+            return cap_diff(self.diff(number), max_diff_kb, ignore_paths)
+        except GitHubError as exc:
+            if not diff_too_large(exc):
+                raise
+        rebuilt, omitted = diff_from_files(listing)
+        diff, unseen = cap_diff(rebuilt, max_diff_kb, ignore_paths)
+        # cap_diff keeps a no-patch file's note, but its changes were never
+        # seen. An ignored path stays out, as it does from the real diff.
+        unseen += [
+            path
+            for path in omitted
+            if path not in unseen and not matches_any(path, ignore_paths or [])
+        ]
+        # The file listing stops at 3000 files; the rest have no name to give.
+        try:
+            missing = int(listed_count or 0) - len(listing)
+        except (TypeError, ValueError):
+            missing = 0
+        if missing > 0:
+            unseen.append(f"{missing} more files that GitHub's file list does not return")
+        print(
+            f"reviewbot: GitHub's diff media type answered 406 too_large for #{number}; "
+            f"rebuilt the diff from the patches of {len(listing)} listed files "
+            f"({len(omitted)} without a patch)"
+        )
+        return diff, unseen
 
     def issue_comments(self, number: int) -> list[dict]:
         return self._paged(f"/repos/{self.repo}/issues/{number}/comments")
@@ -623,8 +697,11 @@ class GitHub:
     ) -> PRFacts:
         """Everything the engine needs about one pull request."""
         pull = self.pull_request(number)
-        files = self.changed_files(number)
-        diff, unseen = cap_diff(self.diff(number), max_diff_kb, ignore_paths)
+        listing = self._file_listing(number)
+        files = [_changed_file(item) for item in listing]
+        diff, unseen = self.capped_diff(
+            number, listing, (pull or {}).get("changed_files"), max_diff_kb, ignore_paths
+        )
         previous, since = review_thread(self.issue_comments(number))
         state = markers.parse(previous.get("body") if previous else None)
 

@@ -808,3 +808,141 @@ def test_a_pasted_marker_does_not_mask_the_real_review():
     previous, since = github.review_thread([real, asked, pasted])
     assert previous["id"] == 9
     assert [c["body"] for c in since] == ["@marketdata-code-review re-review"]
+
+
+# --- a diff too large for the diff media type (issue #32) ------------------
+
+# What GitHub answered for api#739 on 2026-11-13, byte for byte.
+TOO_LARGE = {
+    "message": "Sorry, the diff exceeded the maximum number of lines (20000)",
+    "errors": [{"resource": "PullRequest", "field": "diff", "code": "too_large"}],
+    "documentation_url": "https://docs.github.com/rest/pulls/pulls#get-a-pull-request",
+    "status": "406",
+}
+
+PULL = {
+    "number": 7,
+    "title": "t",
+    "body": "",
+    "user": {"login": "alice", "type": "User"},
+    "draft": False,
+    "labels": [],
+    "head": {"sha": "abc"},
+    "base": {"ref": "main"},
+    "node_id": "N",
+}
+
+
+def large_pr_routes(transport, files, diff_status=406, diff_data=TOO_LARGE, pull=None):
+    """A pull request whose diff media type answers `diff_status`."""
+    transport.add("GET", "/repos/MarketData-App/api/pulls/7", data=pull or PULL)
+    transport.add("GET", "/repos/MarketData-App/api/pulls/7/files?per_page=100&page=1", data=files)
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/pulls/7",
+        status=diff_status,
+        data=diff_data,
+        text=json.dumps(diff_data),
+    )
+    transport.add("GET", "/repos/MarketData-App/api/issues/7/comments?per_page=100&page=1", data=[])
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
+        data={"check_runs": []},
+    )
+    transport.add("GET", "/repos/MarketData-App/api/commits/abc/status", data={"state": "pending"})
+
+
+def patched(path, patch="@@ -1 +1 @@\n-a\n+b", status="modified", additions=1, deletions=1):
+    item = {"filename": path, "status": status, "additions": additions, "deletions": deletions}
+    if patch is not None:
+        item["patch"] = patch
+    return item
+
+
+def test_an_error_carries_the_status_and_the_scrubbed_answer(api, transport):
+    transport.add("GET", "/repos/MarketData-App/api/pulls/7", status=406, text=f"too_large {TOKEN}")
+    with pytest.raises(github.GitHubError) as caught:
+        api.diff(7)
+    assert caught.value.status == 406
+    assert caught.value.detail == "too_large [redacted]"
+
+
+def test_a_too_large_diff_is_rebuilt_from_the_file_patches(api, transport):
+    large_pr_routes(transport, [patched("sdk/client.py", "@@ -1 +1 @@\n-old()\n+retry()")])
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.diff == (
+        "diff --git a/sdk/client.py b/sdk/client.py\n"
+        "--- a/sdk/client.py\n+++ b/sdk/client.py\n@@ -1 +1 @@\n-old()\n+retry()\n"
+    )
+    assert pr.unseen_files == []
+    assert pr.paths == ["sdk/client.py"]
+    # The file list is read once, for the changed files and the diff both.
+    listing = "/repos/MarketData-App/api/pulls/7/files?per_page=100&page=1"
+    assert [c["path"] for c in transport.calls].count(listing) == 1
+
+
+def test_the_rebuilt_diff_still_obeys_max_diff_kb(api, transport):
+    large_pr_routes(
+        transport,
+        [
+            patched("a.py"),
+            patched("b.py", "@@ -1 +1 @@\n+" + "y" * 3000),
+            patched("c.py"),
+        ],
+    )
+    pr = api.gather(7, max_diff_kb=1)
+    assert "a.py" in pr.diff
+    assert "b.py" not in pr.diff
+    assert pr.unseen_files == ["b.py", "c.py"]
+
+
+def test_the_rebuilt_diff_still_drops_ignored_paths(api, transport):
+    large_pr_routes(
+        transport,
+        [
+            patched("goldens/sheet.json", "@@ -1 +1 @@\n+" + "g" * 3000),
+            patched("goldens/huge.json", patch=None, additions=9000),
+            patched("src/app.py"),
+        ],
+    )
+    pr = api.gather(7, max_diff_kb=1, ignore_paths=["goldens/**"])
+    assert "goldens" not in pr.diff
+    assert "src/app.py" in pr.diff
+    assert pr.unseen_files == []
+
+
+def test_a_file_github_sent_without_a_patch_is_unseen(api, transport):
+    large_pr_routes(
+        transport,
+        [
+            patched("src/app.py"),
+            patched("src/optimized.py", patch=None, status="added", additions=6907, deletions=0),
+            patched("pyproject.toml", patch=None, additions=0, deletions=0),
+        ],
+    )
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == ["src/optimized.py", "pyproject.toml"]
+    assert "diff --git a/pyproject.toml b/pyproject.toml\n" in pr.diff
+
+
+def test_files_past_the_listing_limit_are_named_as_unseen(api, transport):
+    """`pulls/N/files` stops at 3000 files. The ones it never lists must not
+    vanish from a review that then reads as complete."""
+    large_pr_routes(transport, [patched("a.py")], pull={**PULL, "changed_files": 3002})
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == ["3001 more files that GitHub's file list does not return"]
+
+
+def test_a_406_that_is_not_too_large_still_fails(api, transport):
+    other = {"message": "Unsupported 'Accept' header", "documentation_url": "x"}
+    large_pr_routes(transport, [patched("a.py")], diff_data=other)
+    with pytest.raises(github.GitHubError, match="failed with 406"):
+        api.gather(7, max_diff_kb=400)
+
+
+@pytest.mark.parametrize("status", [404, 422, 500])
+def test_every_other_diff_error_still_fails(api, transport, status):
+    large_pr_routes(transport, [patched("a.py")], diff_status=status)
+    with pytest.raises(github.GitHubError, match=f"failed with {status}"):
+        api.gather(7, max_diff_kb=400)

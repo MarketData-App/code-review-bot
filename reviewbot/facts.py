@@ -89,6 +89,52 @@ def cap_diff(
     return "".join(kept), unseen
 
 
+# Stands in for the hunks of a file whose patch GitHub left out of the file
+# listing, so the rebuilt diff never reads as if that file were unchanged.
+NO_PATCH_NOTE = (
+    "(GitHub sent no patch for this file, so this diff does not show its changes. "
+    "Its line counts can read 0 although lines changed.)"
+)
+
+
+def diff_from_files(files: list[dict]) -> tuple[str, list[str]]:
+    """A unified diff rebuilt from the per-file patches of `pulls/N/files`.
+
+    The fallback for a pull request whose diff media type answers 406 because
+    the diff is too large (issue #32). `files` is that listing as the API
+    returns it. Returns the diff, one `diff --git` section per file in listing
+    order, so `cap_diff` splits and budgets it exactly as it does the real
+    one; and the paths whose patch GitHub left out. Such a file still gets a
+    section, with `NO_PATCH_NOTE` in place of its hunks. Raises nothing.
+
+    A missing patch is never read as "no change". Measured on api#739: past
+    about 900 KB of patches GitHub sent the last nine files with no patch and
+    `additions: 0, deletions: 0`, `pyproject.toml` among them. A binary file
+    has no patch either, so on this path it counts as unseen too.
+    """
+    sections, omitted = [], []
+    for item in files:
+        path = item.get("filename") or ""
+        if not path:
+            continue
+        old = item.get("previous_filename") or path
+        status = item.get("status") or ""
+        lines = [f"diff --git a/{old} b/{path}"]
+        if old != path:
+            kind = "copy" if status == "copied" else "rename"
+            lines += [f"{kind} from {old}", f"{kind} to {path}"]
+        patch = item.get("patch")
+        if patch:
+            lines.append("--- /dev/null" if status == "added" else f"--- a/{old}")
+            lines.append("+++ /dev/null" if status == "removed" else f"+++ b/{path}")
+            lines.append(patch.rstrip("\n"))
+        else:
+            omitted.append(path)
+            lines.append(NO_PATCH_NOTE)
+        sections.append("\n".join(lines) + "\n")
+    return "".join(sections), omitted
+
+
 CI_DIR = ".reviewbot-ci"
 
 

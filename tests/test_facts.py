@@ -190,3 +190,70 @@ def test_a_real_overflow_still_reports_unseen_files():
     kept, unseen = facts.cap_diff(big_source + SOURCE, max_kb=1, ignore_paths=["tests/fixtures/**"])
     assert unseen == ["src/huge.py", "src/client.py"]
     assert kept.strip() == ""
+
+
+# --- the diff rebuilt from the per-file patches (issue #32) -----------------
+
+
+def listed(path, status="modified", patch="@@ -1 +1 @@\n-a\n+b", **extra):
+    """One entry of `pulls/N/files` as the API returns it."""
+    item = {"filename": path, "status": status, "additions": 1, "deletions": 1}
+    if patch is not None:
+        item["patch"] = patch
+    item.update(extra)
+    return item
+
+
+def test_the_rebuilt_diff_has_one_git_section_per_file():
+    diff, omitted = facts.diff_from_files(
+        [
+            listed("sdk/client.py"),
+            listed("sdk/new.py", status="added", patch="@@ -0,0 +1 @@\n+fresh"),
+            listed("sdk/old.py", status="removed", patch="@@ -1 +0,0 @@\n-gone"),
+        ]
+    )
+    assert omitted == []
+    assert diff == (
+        "diff --git a/sdk/client.py b/sdk/client.py\n"
+        "--- a/sdk/client.py\n+++ b/sdk/client.py\n@@ -1 +1 @@\n-a\n+b\n"
+        "diff --git a/sdk/new.py b/sdk/new.py\n"
+        "--- /dev/null\n+++ b/sdk/new.py\n@@ -0,0 +1 @@\n+fresh\n"
+        "diff --git a/sdk/old.py b/sdk/old.py\n"
+        "--- a/sdk/old.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n"
+    )
+
+
+def test_the_rebuilt_diff_names_both_sides_of_a_rename():
+    diff, _ = facts.diff_from_files(
+        [listed("sdk/after.py", status="renamed", previous_filename="sdk/before.py")]
+    )
+    assert diff.startswith(
+        "diff --git a/sdk/before.py b/sdk/after.py\n"
+        "rename from sdk/before.py\nrename to sdk/after.py\n"
+        "--- a/sdk/before.py\n+++ b/sdk/after.py\n"
+    )
+
+
+def test_a_file_without_a_patch_is_omitted_and_never_reads_as_unchanged():
+    """Measured on api#739: past about 900 KB of patches GitHub sent the last
+    nine files with no patch and 0/0 line counts, pyproject.toml among them.
+    So a missing patch is "not seen", whatever the counts say."""
+    diff, omitted = facts.diff_from_files(
+        [
+            listed("big.py", status="added", patch=None, additions=6907, deletions=0),
+            listed("pyproject.toml", patch=None, additions=0, deletions=0),
+            listed("small.py"),
+        ]
+    )
+    assert omitted == ["big.py", "pyproject.toml"]
+    assert "diff --git a/pyproject.toml b/pyproject.toml\n" + facts.NO_PATCH_NOTE + "\n" in diff
+    assert "+b\n" in diff
+
+
+def test_the_cap_splits_the_rebuilt_diff_by_file():
+    diff, _ = facts.diff_from_files(
+        [listed("small.py"), listed("big.py", patch="@@ -1 +1 @@\n+" + "y" * 3000), listed("z.py")]
+    )
+    kept, unseen = facts.cap_diff(diff, max_kb=1)
+    assert "small.py" in kept
+    assert unseen == ["big.py", "z.py"]
