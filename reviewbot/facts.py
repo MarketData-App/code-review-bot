@@ -5,6 +5,8 @@ render.py read it, and none of them needs to import the module that holds the
 token.
 """
 
+import difflib
+import itertools
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,22 +98,61 @@ NO_PATCH_NOTE = (
     "Its line counts can read 0 although lines changed.)"
 )
 
+# Stands in for the hunks of a file read from both commits with equal lines:
+# an empty new file, or a change of mode only.
+NO_LINE_CHANGE_NOTE = "(No line changed: both versions of this file have the same lines.)"
 
-def diff_from_files(files: list[dict]) -> tuple[str, list[str]]:
+
+def _lines(text: str) -> list[str]:
+    """`text` split as git splits it: at each line feed, and nowhere else."""
+    if not text:
+        return []
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def unified_patch(old: str, new: str) -> str:
+    """The hunks of a unified diff from `old` to `new`, as GitHub's `patch` holds them.
+
+    `old` and `new` are the two versions of one file, "" for the side that
+    does not exist. Returns the hunks with three lines of context, no file
+    header and no final line feed; "" when the lines are equal. A last line
+    with no line feed is marked the way git marks it. Raises nothing.
+    """
+    out = []
+    # The first two lines unified_diff yields are its own ---/+++ header.
+    for line in itertools.islice(difflib.unified_diff(_lines(old), _lines(new), n=3), 2, None):
+        if line.endswith("\n"):
+            out.append(line)
+        else:
+            out.append(line + "\n\\ No newline at end of file\n")
+    return "".join(out).rstrip("\n")
+
+
+def diff_from_files(
+    files: list[dict], rebuilt: dict[str, str] | None = None
+) -> tuple[str, list[str]]:
     """A unified diff rebuilt from the per-file patches of `pulls/N/files`.
 
     The fallback for a pull request whose diff media type answers 406 because
     the diff is too large (issue #32). `files` is that listing as the API
-    returns it. Returns the diff, one `diff --git` section per file in listing
-    order, so `cap_diff` splits and budgets it exactly as it does the real
-    one; and the paths whose patch GitHub left out. Such a file still gets a
-    section, with `NO_PATCH_NOTE` in place of its hunks. Raises nothing.
+    returns it. `rebuilt` maps the path of a file that GitHub sent with no
+    patch to the hunks read from the two commits instead (`unified_patch`);
+    "" there means both versions were read and no line changed. Returns the
+    diff, one `diff --git` section per file in listing order, so `cap_diff`
+    splits and budgets it exactly as it does the real one; and the paths that
+    still have no patch. Such a file still gets a section, with
+    `NO_PATCH_NOTE` in place of its hunks. Raises nothing.
 
     A missing patch is never read as "no change". Measured on api#739: past
     about 900 KB of patches GitHub sent the last nine files with no patch and
-    `additions: 0, deletions: 0`, `pyproject.toml` among them. A binary file
-    has no patch either, so on this path it counts as unseen too.
+    `additions: 0, deletions: 0`, `pyproject.toml` among them. A file that
+    could not be read as text, a binary file among them, stays omitted.
     """
+    rebuilt = rebuilt or {}
     sections, omitted = [], []
     for item in files:
         path = item.get("filename") or ""
@@ -123,11 +164,13 @@ def diff_from_files(files: list[dict]) -> tuple[str, list[str]]:
         if old != path:
             kind = "copy" if status == "copied" else "rename"
             lines += [f"{kind} from {old}", f"{kind} to {path}"]
-        patch = item.get("patch")
+        patch = item.get("patch") or rebuilt.get(path)
         if patch:
             lines.append("--- /dev/null" if status == "added" else f"--- a/{old}")
             lines.append("+++ /dev/null" if status == "removed" else f"+++ b/{path}")
             lines.append(patch.rstrip("\n"))
+        elif path in rebuilt:
+            lines.append(NO_LINE_CHANGE_NOTE)
         else:
             omitted.append(path)
             lines.append(NO_PATCH_NOTE)

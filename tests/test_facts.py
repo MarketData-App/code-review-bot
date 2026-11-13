@@ -257,3 +257,54 @@ def test_the_cap_splits_the_rebuilt_diff_by_file():
     kept, unseen = facts.cap_diff(diff, max_kb=1)
     assert "small.py" in kept
     assert unseen == ["big.py", "z.py"]
+
+
+# --- a patch rebuilt from the two versions of a file (issue #32, step 2) ----
+
+
+def test_unified_patch_gives_the_hunks_as_github_does():
+    old = "".join(f"line {n}\n" for n in range(1, 11))
+    new = old.replace("line 5\n", "line five\n")
+    assert facts.unified_patch(old, new) == (
+        "@@ -2,7 +2,7 @@\n line 2\n line 3\n line 4\n-line 5\n+line five\n line 6\n line 7\n line 8"
+    )
+
+
+def test_unified_patch_of_a_new_file_adds_every_line():
+    assert facts.unified_patch("", "a\nb\n") == "@@ -0,0 +1,2 @@\n+a\n+b"
+
+
+def test_unified_patch_marks_a_missing_final_newline():
+    assert facts.unified_patch("a\n", "a\nb") == (
+        "@@ -1 +1,2 @@\n a\n+b\n\\ No newline at end of file"
+    )
+
+
+def test_unified_patch_splits_on_line_feeds_only():
+    """git splits lines on \\n alone; a form feed inside a line stays in it."""
+    assert facts.unified_patch("a\fb\n", "a\fc\n") == "@@ -1 +1 @@\n-a\fb\n+a\fc"
+
+
+def test_unified_patch_of_equal_texts_is_empty():
+    assert facts.unified_patch("same\n", "same\n") == ""
+
+
+def test_a_rebuilt_patch_fills_the_section_github_left_empty():
+    diff, omitted = facts.diff_from_files(
+        [listed("big.py", status="added", patch=None, additions=2, deletions=0)],
+        rebuilt={"big.py": "@@ -0,0 +1,2 @@\n+a\n+b"},
+    )
+    assert omitted == []
+    assert (
+        diff
+        == "diff --git a/big.py b/big.py\n--- /dev/null\n+++ b/big.py\n@@ -0,0 +1,2 @@\n+a\n+b\n"
+    )
+
+
+def test_a_rebuilt_empty_patch_reads_as_no_line_changed():
+    diff, omitted = facts.diff_from_files(
+        [listed("empty.py", status="added", patch=None, additions=0, deletions=0)],
+        rebuilt={"empty.py": ""},
+    )
+    assert omitted == []
+    assert diff == "diff --git a/empty.py b/empty.py\n" + facts.NO_LINE_CHANGE_NOTE + "\n"
