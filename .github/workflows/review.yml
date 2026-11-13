@@ -93,7 +93,7 @@ jobs:
   # even scheduled.
   #
   # It says no for TWO reasons only. One is `policy.push_skip`, which
-  # `reviewbot run` applies again on the runner. The other (issue #30): under
+  # `reviewbot run` applies again on the runner. The other: under
   # `require_ci_green`, another of the CALLER's trigger workflows still runs
   # on the same head, so its own completion comes later and starts the review.
   # The trigger list is the caller's `on.workflow_run.workflows`, read from
