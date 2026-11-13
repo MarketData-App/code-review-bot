@@ -114,6 +114,25 @@ def _as_names(value) -> list[str] | None:
     return None
 
 
+def trigger_workflows(caller_text: str | None) -> list[str] | None:
+    """The workflow names in a caller's `on.workflow_run.workflows`, or None.
+
+    `caller_text` is the caller workflow file. The preflight job reads it to
+    learn which CI completions start a review: only a workflow on this list
+    sends the caller another `workflow_run` when it ends. Returns None when the
+    file is absent, does not parse, or holds no list of names there. Raises
+    nothing.
+    """
+    try:
+        spec = yaml.safe_load(caller_text or "")
+    except yaml.YAMLError:
+        return None
+    run_on = triggers(spec).get("workflow_run")
+    if not isinstance(run_on, dict):
+        return None
+    return _as_names(run_on.get("workflows")) or None
+
+
 def _calls_the_review_workflow(
     caller: dict, workflow_files: dict, ref_resolver=None
 ) -> tuple[bool, str]:

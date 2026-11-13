@@ -28,6 +28,7 @@ Set exactly these, and nothing else:
 | Pull requests | **Read and write** | The review comment, the approval, the labels. |
 | Issues | **Read and write** | Issue comments on a pull request are issue comments. |
 | Checks | **Read and write** | The check run and its annotations. |
+| Actions | Read-only | Job logs for the brief, and the workflow runs on the head that the preflight job reads. Without it both degrade: a review loses the logs, and the preflight lets every CI completion through. |
 
 Leave every other permission at **No access**. Subscribe to no events.
 
@@ -156,7 +157,12 @@ Its comments carry four things that each cost a failed run:
   its filename. The gate looks at every check on the commit, so whichever
   finishes last is the one whose review proceeds. Earlier triggers skip cheaply,
   or wait under `wait_for_checks` (section 4); a repeat on the same head skips
-  too. Extra triggers are self-deduplicating.
+  too. Extra triggers are self-deduplicating. Under `require_ci_green` (the
+  default), an earlier trigger stops in the `preflight` job on a GitHub-hosted
+  runner while another workflow on this list still runs on the same head, so
+  it never queues for the self-hosted runner. The preflight reads this list
+  from the caller file itself, so a workflow left off the list, or another
+  app's check such as Codecov, never stops a review.
 - **Only review pull requests.** `workflow_run` fires for default-branch pushes
   as well, because CI runs there too. Without
   `github.event.workflow_run.event == 'pull_request'`, every merge starts a job

@@ -92,12 +92,18 @@ jobs:
   # decision is made here, on a GitHub-hosted runner, before the review job is
   # even scheduled.
   #
-  # It says no for ONE reason only, `policy.push_skip`, which `reviewbot run`
-  # applies again on the runner. Everything else -- trust, CI, an unchanged
-  # head -- stays with the review job. It reads the pull request, the base
-  # branch's policy and the comments, and nothing from the pull request's
-  # head: no checkout, no code. Under `review_on_push: always`, the default,
-  # it always answers yes.
+  # It says no for TWO reasons only. One is `policy.push_skip`, which
+  # `reviewbot run` applies again on the runner. The other: under
+  # `require_ci_green`, another of the CALLER's trigger workflows still runs
+  # on the same head, so its own completion comes later and starts the review.
+  # The trigger list is the caller's `on.workflow_run.workflows`, read from
+  # the caller's file at GITHUB_WORKFLOW_REF and GITHUB_WORKFLOW_SHA, which
+  # the runner sets in every job; a workflow that is not on it, or another
+  # app's check, sends no later workflow_run and so never stops a run.
+  # Everything else -- trust, CI, an unchanged head -- stays with the review
+  # job. It reads the pull request, the base branch's policy, the comments,
+  # the caller's workflow file on the default branch and the head's workflow
+  # runs, and nothing from the pull request's head: no checkout, no code.
   #
   # FAILS TOWARD REVIEWING. The review job runs unless this job said `false`,
   # so a failed or skipped preflight leaves the review job deciding exactly as
