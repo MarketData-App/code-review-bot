@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from reviewbot import github, markers
+from reviewbot import facts, github, markers
 
 TOKEN = "ghs_" + "T" * 36
 
@@ -808,3 +808,350 @@ def test_a_pasted_marker_does_not_mask_the_real_review():
     previous, since = github.review_thread([real, asked, pasted])
     assert previous["id"] == 9
     assert [c["body"] for c in since] == ["@marketdata-code-review re-review"]
+
+
+# --- a diff too large for the diff media type (issue #32) ------------------
+
+# What GitHub answered for api#739 on 2026-11-13, byte for byte.
+TOO_LARGE = {
+    "message": "Sorry, the diff exceeded the maximum number of lines (20000)",
+    "errors": [{"resource": "PullRequest", "field": "diff", "code": "too_large"}],
+    "documentation_url": "https://docs.github.com/rest/pulls/pulls#get-a-pull-request",
+    "status": "406",
+}
+
+PULL = {
+    "number": 7,
+    "title": "t",
+    "body": "",
+    "user": {"login": "alice", "type": "User"},
+    "draft": False,
+    "labels": [],
+    "head": {"sha": "abc"},
+    "base": {"ref": "main"},
+    "node_id": "N",
+}
+
+
+def large_pr_routes(transport, files, diff_status=406, diff_data=TOO_LARGE, pull=None):
+    """A pull request whose diff media type answers `diff_status`."""
+    transport.add("GET", "/repos/MarketData-App/api/pulls/7", data=pull or PULL)
+    transport.add("GET", "/repos/MarketData-App/api/pulls/7/files?per_page=100&page=1", data=files)
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/pulls/7",
+        status=diff_status,
+        data=diff_data,
+        text=json.dumps(diff_data),
+    )
+    transport.add("GET", "/repos/MarketData-App/api/issues/7/comments?per_page=100&page=1", data=[])
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/commits/abc/check-runs?per_page=100",
+        data={"check_runs": []},
+    )
+    transport.add("GET", "/repos/MarketData-App/api/commits/abc/status", data={"state": "pending"})
+
+
+def patched(path, patch="@@ -1 +1 @@\n-a\n+b", status="modified", additions=1, deletions=1):
+    item = {"filename": path, "status": status, "additions": additions, "deletions": deletions}
+    if patch is not None:
+        item["patch"] = patch
+    return item
+
+
+def test_an_error_carries_the_status_and_the_scrubbed_answer(api, transport):
+    transport.add("GET", "/repos/MarketData-App/api/pulls/7", status=406, text=f"too_large {TOKEN}")
+    with pytest.raises(github.GitHubError) as caught:
+        api.diff(7)
+    assert caught.value.status == 406
+    assert caught.value.detail == "too_large [redacted]"
+
+
+def test_a_too_large_diff_is_rebuilt_from_the_file_patches(api, transport):
+    large_pr_routes(transport, [patched("sdk/client.py", "@@ -1 +1 @@\n-old()\n+retry()")])
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.diff == (
+        "diff --git a/sdk/client.py b/sdk/client.py\n"
+        "--- a/sdk/client.py\n+++ b/sdk/client.py\n@@ -1 +1 @@\n-old()\n+retry()\n"
+    )
+    assert pr.unseen_files == []
+    assert pr.paths == ["sdk/client.py"]
+    # The file list is read once, for the changed files and the diff both.
+    listing = "/repos/MarketData-App/api/pulls/7/files?per_page=100&page=1"
+    assert [c["path"] for c in transport.calls].count(listing) == 1
+
+
+def test_the_rebuilt_diff_still_obeys_max_diff_kb(api, transport):
+    large_pr_routes(
+        transport,
+        [
+            patched("a.py"),
+            patched("b.py", "@@ -1 +1 @@\n+" + "y" * 3000),
+            patched("c.py"),
+        ],
+    )
+    pr = api.gather(7, max_diff_kb=1)
+    assert "a.py" in pr.diff
+    assert "b.py" not in pr.diff
+    assert pr.unseen_files == ["b.py", "c.py"]
+
+
+def test_the_rebuilt_diff_still_drops_ignored_paths(api, transport):
+    large_pr_routes(
+        transport,
+        [
+            patched("goldens/sheet.json", "@@ -1 +1 @@\n+" + "g" * 3000),
+            patched("goldens/huge.json", patch=None, additions=9000),
+            patched("src/app.py"),
+        ],
+    )
+    pr = api.gather(7, max_diff_kb=1, ignore_paths=["goldens/**"])
+    assert "goldens" not in pr.diff
+    assert "src/app.py" in pr.diff
+    assert pr.unseen_files == []
+
+
+def test_files_past_the_listing_limit_are_named_as_unseen(api, transport):
+    """`pulls/N/files` stops at 3000 files. The ones it never lists must not
+    vanish from a review that then reads as complete."""
+    large_pr_routes(transport, [patched("a.py")], pull={**PULL, "changed_files": 3002})
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == ["3001 more files that GitHub's file list does not return"]
+
+
+def test_a_406_that_is_not_too_large_still_fails(api, transport):
+    other = {"message": "Unsupported 'Accept' header", "documentation_url": "x"}
+    large_pr_routes(transport, [patched("a.py")], diff_data=other)
+    with pytest.raises(github.GitHubError, match="failed with 406"):
+        api.gather(7, max_diff_kb=400)
+
+
+@pytest.mark.parametrize("status", [404, 422, 500])
+def test_every_other_diff_error_still_fails(api, transport, status):
+    large_pr_routes(transport, [patched("a.py")], diff_status=status)
+    with pytest.raises(github.GitHubError, match=f"failed with {status}"):
+        api.gather(7, max_diff_kb=400)
+
+
+# --- files GitHub lists with no patch, read from the commits (#32, step 2) --
+
+BASE_SHA = "b4se"
+MERGE_BASE = "m3rg3"
+FORKED = {**PULL, "base": {"ref": "main", "sha": BASE_SHA}}
+COMPARE = f"/repos/MarketData-App/api/compare/{BASE_SHA}...abc?per_page=1&page=2"
+
+
+def contents(transport, path, ref, text=None, status=200, raw=None, encoding="base64"):
+    """The contents API's answer for `path` at `ref`."""
+    import base64
+
+    route = f"/repos/MarketData-App/api/contents/{path}?ref={ref}"
+    if status != 200:
+        transport.add("GET", route, status=status, text=json.dumps({"message": "Not Found"}))
+        return
+    body = raw if raw is not None else (text or "").encode("utf-8")
+    data = {"type": "file", "path": path, "size": len(body), "encoding": encoding}
+    data["content"] = base64.b64encode(body).decode("ascii") if encoding == "base64" else ""
+    transport.add("GET", route, data=data)
+
+
+def merge_base(transport, sha=MERGE_BASE, status=200):
+    if status != 200:
+        transport.add("GET", COMPARE, status=status, text=json.dumps({"message": "No"}))
+    else:
+        transport.add("GET", COMPARE, data={"merge_base_commit": {"sha": sha}, "files": []})
+
+
+def reads(transport):
+    return [
+        c["path"] for c in transport.calls if "/contents/" in c["path"] or "/compare/" in c["path"]
+    ]
+
+
+def test_a_modified_file_without_a_patch_is_diffed_from_the_merge_base(api, transport):
+    large_pr_routes(transport, [patched("pyproject.toml", patch=None, additions=0)], pull=FORKED)
+    merge_base(transport)
+    contents(transport, "pyproject.toml", "abc", text="[project]\nname = 'api'\nversion = '2'\n")
+    contents(
+        transport, "pyproject.toml", MERGE_BASE, text="[project]\nname = 'api'\nversion = '1'\n"
+    )
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == []
+    assert pr.diff == (
+        "diff --git a/pyproject.toml b/pyproject.toml\n"
+        "--- a/pyproject.toml\n+++ b/pyproject.toml\n"
+        "@@ -1,3 +1,3 @@\n [project]\n name = 'api'\n-version = '1'\n+version = '2'\n"
+    )
+
+
+def test_an_added_file_without_a_patch_is_read_at_the_head_only(api, transport):
+    large_pr_routes(
+        transport, [patched("src/optimized.py", patch=None, status="added")], pull=FORKED
+    )
+    contents(transport, "src/optimized.py", "abc", text="def fast():\n    return 1\n")
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == []
+    assert "--- /dev/null\n+++ b/src/optimized.py\n@@ -0,0 +1,2 @@\n+def fast():\n" in pr.diff
+    # A new file has no old side, so the merge base is never asked for.
+    assert reads(transport) == ["/repos/MarketData-App/api/contents/src/optimized.py?ref=abc"]
+
+
+def test_a_removed_file_without_a_patch_is_read_at_the_merge_base_only(api, transport):
+    large_pr_routes(transport, [patched("old.py", patch=None, status="removed")], pull=FORKED)
+    merge_base(transport)
+    contents(transport, "old.py", MERGE_BASE, text="gone\n")
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == []
+    assert "--- a/old.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n" in pr.diff
+    assert "/repos/MarketData-App/api/contents/old.py?ref=abc" not in reads(transport)
+
+
+def test_a_renamed_file_is_read_under_its_old_name_at_the_merge_base(api, transport):
+    item = {**patched("new.py", patch=None, status="renamed"), "previous_filename": "old.py"}
+    large_pr_routes(transport, [item], pull=FORKED)
+    merge_base(transport)
+    contents(transport, "new.py", "abc", text="b\n")
+    contents(transport, "old.py", MERGE_BASE, text="a\n")
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == []
+    assert "rename from old.py\nrename to new.py\n--- a/old.py\n+++ b/new.py\n" in pr.diff
+    assert "-a\n+b\n" in pr.diff
+
+
+def test_a_file_that_cannot_be_read_as_text_stays_unseen(api, transport):
+    """Binary, over the contents API's 1 MB, gone (404), or too large for the
+    API: each one keeps its no-patch note and stays unseen."""
+    large_pr_routes(
+        transport,
+        [
+            patched("src/app.py"),
+            patched("logo.png", patch=None, status="added"),
+            patched("data.bin", patch=None, status="added"),
+            patched("huge.sql", patch=None, status="added"),
+            patched("lost.py", patch=None, status="added"),
+            patched("vast.csv", patch=None, status="added"),
+            patched("link.py", patch=None, status="added"),
+        ],
+        pull=FORKED,
+    )
+    contents(transport, "logo.png", "abc", raw=b"\x89PNG\r\n\x1a\n\x00\x00")
+    contents(transport, "data.bin", "abc", raw=b"\xff\xfe not utf-8")
+    contents(transport, "huge.sql", "abc", encoding="none")
+    contents(transport, "lost.py", "abc", status=404)
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/contents/vast.csv?ref=abc",
+        status=403,
+        text=json.dumps({"message": "too large", "errors": [{"code": "too_large"}]}),
+    )
+    # The contents API follows a symlink to its target and answers for the
+    # target's path: that is not the text of the link itself.
+    transport.add(
+        "GET",
+        "/repos/MarketData-App/api/contents/link.py?ref=abc",
+        data={"type": "file", "path": "src/app.py", "encoding": "base64", "content": "eA=="},
+    )
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == ["logo.png", "data.bin", "huge.sql", "lost.py", "vast.csv", "link.py"]
+    assert pr.diff.count(facts.NO_PATCH_NOTE) == 6
+
+
+def test_no_merge_base_leaves_the_old_side_unread_and_the_file_unseen(api, transport):
+    large_pr_routes(
+        transport,
+        [patched("a.py", patch=None), patched("new.py", patch=None, status="added")],
+        pull=FORKED,
+    )
+    merge_base(transport, status=404)
+    contents(transport, "new.py", "abc", text="x\n")
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == ["a.py"]
+    assert "+x\n" in pr.diff
+
+
+def test_the_size_cap_applies_to_the_files_read_from_the_commits(api, transport):
+    large_pr_routes(
+        transport,
+        [
+            patched("small.py"),
+            patched("big.py", patch=None, status="added"),
+            patched("later.py", patch=None, status="added"),
+        ],
+        pull=FORKED,
+    )
+    contents(transport, "big.py", "abc", text="y" * 3000 + "\n")
+    pr = api.gather(7, max_diff_kb=1)
+    assert "small.py" in pr.diff
+    assert "big.py" not in pr.diff
+    assert pr.unseen_files == ["big.py", "later.py"]
+    # big.py alone is over the budget, so later.py could never fit: it is not read.
+    assert "/repos/MarketData-App/api/contents/later.py?ref=abc" not in reads(transport)
+
+
+def test_an_ignored_file_without_a_patch_is_never_read(api, transport):
+    large_pr_routes(
+        transport,
+        [patched("goldens/huge.json", patch=None, status="added"), patched("src/app.py")],
+        pull=FORKED,
+    )
+    pr = api.gather(7, max_diff_kb=400, ignore_paths=["goldens/**"])
+    assert pr.unseen_files == []
+    assert reads(transport) == []
+
+
+def test_any_other_error_on_a_read_fails_and_names_the_file(api, transport):
+    large_pr_routes(transport, [patched("src/app.py", patch=None, status="added")], pull=FORKED)
+    contents(transport, "src/app.py", "abc", status=500)
+    with pytest.raises(github.GitHubError, match=r"could not read src/app\.py at abc"):
+        api.gather(7, max_diff_kb=400)
+
+
+def test_any_other_error_on_the_merge_base_fails(api, transport):
+    large_pr_routes(transport, [patched("a.py", patch=None)], pull=FORKED)
+    merge_base(transport, status=502)
+    with pytest.raises(github.GitHubError, match="could not find the merge base"):
+        api.gather(7, max_diff_kb=400)
+
+
+def test_no_more_than_max_file_reads_files_are_read(api, transport, monkeypatch):
+    monkeypatch.setattr(github, "MAX_FILE_READS", 2)
+    names = ["a.py", "b.py", "c.py"]
+    large_pr_routes(transport, [patched(n, patch=None, status="added") for n in names], pull=FORKED)
+    contents(transport, "a.py", "abc", text="a\n")
+    contents(transport, "b.py", "abc", text="b\n")
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == ["c.py"]
+    assert "/repos/MarketData-App/api/contents/c.py?ref=abc" not in reads(transport)
+
+
+def test_a_file_whose_two_versions_have_the_same_lines_stays_unseen(api, transport):
+    """Review finding f21070e6: a change of mode only. The contents API shows
+    no mode, so the change itself was never seen."""
+    large_pr_routes(transport, [patched("run.sh", patch=None, additions=0)], pull=FORKED)
+    merge_base(transport)
+    contents(transport, "run.sh", MERGE_BASE, text="echo hi\n")
+    contents(transport, "run.sh", "abc", text="echo hi\n")
+    pr = api.gather(7, max_diff_kb=400)
+    assert pr.unseen_files == ["run.sh"]
+    assert "diff --git a/run.sh b/run.sh\n" + facts.NO_PATCH_NOTE + "\n" in pr.diff
+
+
+def test_a_crafted_file_name_cannot_start_a_section_or_dodge_ignore_paths(api, transport):
+    """Review finding d621ed5e, on a section built from GitHub's own patch."""
+    crafted = "src/a.py\ndiff --git a/goldens/x.json b/goldens/x.json"
+    large_pr_routes(
+        transport,
+        [
+            patched(crafted, "@@ -1 +1 @@\n-a\n+" + "y" * 3000),
+            patched("goldens/y.json"),
+            patched("z.py"),
+        ],
+        pull=FORKED,
+    )
+    pr = api.gather(7, max_diff_kb=1, ignore_paths=["goldens/**"])
+    assert [ln for ln in pr.diff.split("\n") if ln.startswith("diff --git a/goldens")] == []
+    # Over the budget under its OWN name, and z.py after it, as cap_diff rules.
+    # The name is quoted on its way to the brief and the comment.
+    assert pr.unseen_files == [facts.quote_path(crafted), "z.py"]
+    assert "\n" not in pr.unseen_files[0]

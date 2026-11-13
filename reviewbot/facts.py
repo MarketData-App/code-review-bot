@@ -5,6 +5,8 @@ render.py read it, and none of them needs to import the module that holds the
 token.
 """
 
+import difflib
+import itertools
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,7 +63,6 @@ def cap_diff(
     """
     if not diff:
         return "", []
-    budget = max_kb * 1024
     headers = list(_FILE_HEADER.finditer(diff))
     if not headers:
         return diff, []
@@ -71,7 +72,24 @@ def cap_diff(
     for index, match in enumerate(headers):
         end = headers[index + 1].start() if index + 1 < len(headers) else len(diff)
         sections.append((match.group(2), diff[match.start() : end]))
+    return cap_sections(sections, max_kb, ignore_paths, preamble)
 
+
+def cap_sections(
+    sections: list[tuple[str, str]],
+    max_kb: int,
+    ignore_paths: list[str] | None = None,
+    preamble: str = "",
+) -> tuple[str, list[str]]:
+    """The cap of `cap_diff`, on sections whose paths are already known.
+
+    `sections` is [(path, text)] in diff order, one whole file each, and
+    `preamble` the text before the first one. Returns the kept text and the
+    paths dropped, by the rules `cap_diff` gives. The rebuilt diff comes here
+    directly, so no path is parsed back out of text that a file name could
+    shape. Raises nothing.
+    """
+    budget = max_kb * 1024
     kept = [preamble]
     used = len(preamble.encode("utf-8"))
     unseen = []
@@ -87,6 +105,127 @@ def cap_diff(
         kept.append(text)
         used += size
     return "".join(kept), unseen
+
+
+# Stands in for the hunks of a file whose patch GitHub left out of the file
+# listing, so the rebuilt diff never reads as if that file were unchanged.
+NO_PATCH_NOTE = (
+    "(GitHub sent no patch for this file, so this diff does not show its changes. "
+    "Its line counts can read 0 although lines changed.)"
+)
+
+_C_ESCAPES = {
+    "\a": "\\a",
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\v": "\\v",
+    "\f": "\\f",
+    "\r": "\\r",
+    '"': '\\"',
+    "\\": "\\\\",
+}
+
+
+def quote_path(path: str, prefix: str = "") -> str:
+    """`prefix + path` as git writes it in a diff header: bare when safe, else C-quoted.
+
+    `path` is a file name as the repository holds it, `prefix` "a/" or "b/"
+    or "". Quoted when the name holds a double quote, a backslash or any
+    character that is not printable: a line feed, a tab, a control
+    character, a Unicode line separator. Inside the quotes git's escapes
+    are used (\\n, \\t, \\", \\\\ ...) and the UTF-8 bytes of any other such
+    character in octal. Printable non-ASCII stays as it is, as git writes it
+    with core.quotePath=false. So no file name can end a header line or
+    start a new one. Raises nothing.
+    """
+    full = prefix + path
+    if all(ch.isprintable() and ch not in '"\\' for ch in full):
+        return full
+    out = []
+    for ch in full:
+        if ch in _C_ESCAPES:
+            out.append(_C_ESCAPES[ch])
+        elif ch.isprintable():
+            out.append(ch)
+        else:
+            out.extend(f"\\{byte:03o}" for byte in ch.encode("utf-8", "surrogatepass"))
+    return '"' + "".join(out) + '"'
+
+
+def _lines(text: str) -> list[str]:
+    """`text` split as git splits it: at each line feed, and nowhere else."""
+    if not text:
+        return []
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def unified_patch(old: str, new: str) -> str:
+    """The hunks of a unified diff from `old` to `new`, as GitHub's `patch` holds them.
+
+    `old` and `new` are the two versions of one file, "" for the side that
+    does not exist. Returns the hunks with three lines of context, no file
+    header and no final line feed; "" when the lines are equal. A last line
+    with no line feed is marked the way git marks it. Raises nothing.
+    """
+    out = []
+    # The first two lines unified_diff yields are its own ---/+++ header.
+    for line in itertools.islice(difflib.unified_diff(_lines(old), _lines(new), n=3), 2, None):
+        if line.endswith("\n"):
+            out.append(line)
+        else:
+            out.append(line + "\n\\ No newline at end of file\n")
+    return "".join(out).rstrip("\n")
+
+
+def sections_from_files(
+    files: list[dict], rebuilt: dict[str, str] | None = None
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """A unified diff rebuilt from the per-file patches of `pulls/N/files`, file by file.
+
+    The fallback for a pull request whose diff media type answers 406 because
+    the diff is too large. `files` is that listing as the API returns it. `rebuilt` maps the path of a file that GitHub sent with no
+    patch to the hunks read from the two commits instead (`unified_patch`).
+    Returns [(path, section)], one `diff --git` section per file in listing
+    order, for `cap_sections`; and the paths that still have no patch. Such a
+    file still gets a section, with `NO_PATCH_NOTE` in place of its hunks.
+    Every path in a header goes through `quote_path`. Raises nothing.
+
+    A missing or empty patch is never read as "no change". Past about 900 KB
+    of patches GitHub sends every later file with no patch and with
+    `additions: 0, deletions: 0`, however much it changed. A file that could
+    not be read as text, a binary file among them, stays omitted, and so does
+    one whose two versions have the same lines: its change is a mode or
+    another thing that no patch shows.
+    """
+    rebuilt = rebuilt or {}
+    sections, omitted = [], []
+    for item in files:
+        path = item.get("filename") or ""
+        if not path:
+            continue
+        old = item.get("previous_filename") or path
+        status = item.get("status") or ""
+        lines = [f"diff --git {quote_path(old, 'a/')} {quote_path(path, 'b/')}"]
+        if old != path:
+            kind = "copy" if status == "copied" else "rename"
+            lines += [f"{kind} from {quote_path(old)}", f"{kind} to {quote_path(path)}"]
+        patch = item.get("patch") or rebuilt.get(path)
+        if patch:
+            lines.append("--- /dev/null" if status == "added" else f"--- {quote_path(old, 'a/')}")
+            lines.append(
+                "+++ /dev/null" if status == "removed" else f"+++ {quote_path(path, 'b/')}"
+            )
+            lines.append(patch.rstrip("\n"))
+        else:
+            omitted.append(path)
+            lines.append(NO_PATCH_NOTE)
+        sections.append((path, "\n".join(lines) + "\n"))
+    return sections, omitted
 
 
 CI_DIR = ".reviewbot-ci"
