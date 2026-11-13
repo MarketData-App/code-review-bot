@@ -198,18 +198,30 @@ jobs:
 """
 
 RUN_IDS = {"Tests": 103, "Lint": 101, "Schema": 102, "Go Tests": 104}
+BRANCH = "feature/candles"
+HEAD_REPO = {"id": 7, "full_name": REPO}
 
 
 def completion(name):
     """The workflow_run payload GitHub sends when `name` ends green."""
-    return {"workflow_run": dict(EVENT["workflow_run"], id=RUN_IDS[name], name=name)}
+    return {
+        "workflow_run": dict(
+            EVENT["workflow_run"],
+            id=RUN_IDS[name],
+            name=name,
+            head_branch=BRANCH,
+            head_repository=HEAD_REPO,
+        )
+    }
 
 
-def workflow_run(name, status="completed", run_id=None):
+def workflow_run(name, status="completed", run_id=None, branch=BRANCH, head_repo=HEAD_REPO):
     return {
         "id": run_id or RUN_IDS[name],
         "name": name,
         "head_sha": HEAD,
+        "head_branch": branch,
+        "head_repository": head_repo,
         "event": "pull_request",
         "status": status,
         "conclusion": "success" if status == "completed" else None,
@@ -481,13 +493,35 @@ def test_the_ref_is_used_when_the_runner_gives_no_workflow_sha():
     assert decide_runs(api, completion("Lint"), workflow_sha="")["review"] is False
 
 
-def test_an_event_with_no_head_commit_reads_no_run():
+@pytest.mark.parametrize("missing", ["head_sha", "head_branch", "head_repository"])
+def test_an_event_with_no_head_commit_or_branch_reads_no_run(missing):
     api, transport = api_with_runs([workflow_run("Tests", "in_progress")])
     event = completion("Lint")
-    del event["workflow_run"]["head_sha"]
-    event["workflow_run"]["pull_requests"] = [{"number": 42}]
+    del event["workflow_run"][missing]
     assert decide_runs(api, event)["review"] is True
     assert not read(transport, RUNS_ROUTE)
+
+
+@pytest.mark.parametrize(
+    ("branch", "head_repo"),
+    [
+        ("feature/other", HEAD_REPO),
+        (BRANCH, {"id": 8, "full_name": "someone/api"}),
+        (BRANCH, None),
+        (None, HEAD_REPO),
+    ],
+)
+def test_a_run_for_another_head_branch_on_the_same_commit_does_not_stop_the_run(branch, head_repo):
+    """Another pull request can point at the same commit, from another branch
+    or from a fork with the same branch name. The completion of its run starts
+    that pull request's review, not this one's."""
+    runs = [
+        workflow_run("Lint"),
+        workflow_run("Tests"),
+        workflow_run("Tests", "in_progress", run_id=106, branch=branch, head_repo=head_repo),
+    ]
+    api, _ = api_with_runs(runs)
+    assert decide_runs(api, completion("Lint"))["review"] is True
 
 
 def test_every_page_of_runs_is_read():

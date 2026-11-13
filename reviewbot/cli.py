@@ -133,16 +133,19 @@ def _other_triggers_running(
     `workflow_sha` name the caller's file, as `_caller_triggers` reads them.
     Only a workflow on the caller's own trigger list counts: its completion is
     the next `workflow_run`. A non-trigger workflow or another app's check
-    sends none, so waiting for it would leave the head with no review.
-    Returns the names still running, and a note for the log when there are
-    none. Raises GitHubError when the caller's file or the runs cannot be
-    read.
+    sends none, so waiting for it would leave the head with no review. Only a
+    run from the same head branch of the same head repository counts too:
+    another pull request can point at the same commit, and the completion of
+    its run starts that pull request's review, not this one's. Returns the
+    names still running, and a note for the log when there are none. Raises
+    GitHubError when the caller's file or the runs cannot be read.
     """
     run = event.get("workflow_run") or {}
     sha = str(run.get("head_sha") or "")
     run_event = str(run.get("event") or "")
-    if not sha or not run_event:
-        return [], "the event names no head commit; no trigger workflow was read"
+    head = _run_head(run)
+    if not sha or not run_event or None in head:
+        return [], "the event names no head commit or branch; no trigger workflow was read"
     names = _caller_triggers(api, repo, workflow_ref, workflow_sha)
     if not names:
         return [], "the caller's trigger workflows are unknown, so none was read"
@@ -158,10 +161,22 @@ def _other_triggers_running(
             # The run that sent this event is finished, also when the listing
             # has not caught up with it yet.
             and other.get("id") != run.get("id")
+            and _run_head(other) == head
             and other.get("status") in UNFINISHED_RUN_STATUSES
         }
     )
     return running, f"no other trigger workflow runs on {sha[:7]}"
+
+
+def _run_head(run: dict) -> tuple:
+    """The head branch and head repository id of a workflow run.
+
+    `run` is a workflow run object, from an event payload or from the runs
+    API. A part that is absent is None. Raises nothing.
+    """
+    repository = run.get("head_repository")
+    repository_id = repository.get("id") if isinstance(repository, dict) else None
+    return (run.get("head_branch") or None, repository_id)
 
 
 def preflight(
