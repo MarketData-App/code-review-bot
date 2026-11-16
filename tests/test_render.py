@@ -6,6 +6,8 @@ nothing token-shaped ever reaches it (spec sections 6 and 8).
 Run: pytest tests/test_render.py
 """
 
+from pathlib import Path
+
 import pytest
 
 from reviewbot import config, findings, policy, render
@@ -320,3 +322,143 @@ def test_no_token_shaped_string_reaches_the_comment(parts):
 def test_check_title_is_short(parts):
     title = render.check_title(parts[3])
     assert len(title) <= 60
+
+
+# --- How to get a new review ----------------------------------------------
+#
+# An author whose pull request is not ready, or who still has open findings,
+# needs to know what brings the bot back. Only the caller workflow's triggers
+# do (docs/caller-workflow.yml): CI finishing green after a push, a comment
+# that starts with the handle and a command, and a workflow dispatch. Under
+# `review_on_push: first` the push stops counting once the first review is
+# posted.
+
+NOTE = "### How to get a new review"
+CALLER_TEXT = (Path(__file__).resolve().parent.parent / "docs/caller-workflow.yml").read_text()
+
+
+def parts_with(result=None, waived=None, since=None, **policy_over):
+    pol = config.defaults()
+    pol.update(policy_over)
+    result = result or make_result()
+    waived = waived or {}
+    decisions = policy.decide(result, make_pr(), pol, waived)
+    since = since or findings.since_last_review([], result["findings"])
+    return result, META, pol, decisions, since, waived
+
+
+def ready_result(with_nit=False):
+    nit = [f for f in make_result()["findings"] if f["severity"] == "nit"]
+    return make_result(
+        findings=nit if with_nit else [],
+        proof={"status": "sufficient", "ask": None},
+        verdict={"value": "ready", "reason": "Nothing to change."},
+    )
+
+
+def note_of(body: str) -> str:
+    """The note alone: from its heading to the footer rule."""
+    start = body.index(NOTE)
+    return body[start : body.index("\n---\n", start)]
+
+
+def test_a_blocked_review_ends_with_how_to_get_a_new_review():
+    body = render.render(*gated_parts())
+    assert "Blocked" in body.splitlines()[0]
+    assert NOTE in body
+    assert "### " not in note_of(body)[len(NOTE) :]
+
+
+def test_the_note_is_the_last_section_before_the_footer():
+    # Every optional section rendered, so a note placed above any of them fails.
+    result = make_result()
+    since = {"resolved": ["deadbeef"], "still_open": [result["findings"][0]["id"]], "new": []}
+    body = render.render(*parts_with(result, since=since))
+    assert "### Since last review" in body
+    assert body.index(NOTE) > body.index("### Since last review")
+    assert body.index(NOTE) > body.index("### Findings")
+    assert "### " not in note_of(body)[len(NOTE) :]
+
+
+def test_a_review_that_needs_changes_carries_the_note_too(parts):
+    assert "Needs changes" in render.render(*parts).splitlines()[0]
+    assert NOTE in render.render(*parts)
+
+
+def test_a_ready_review_with_open_findings_carries_the_note():
+    body = render.render(*parts_with(ready_result(with_nit=True)))
+    assert "Ready" in body.splitlines()[0]
+    assert NOTE in body
+
+
+def test_a_ready_review_with_no_findings_has_no_note():
+    body = render.render(*parts_with(ready_result()))
+    assert "Ready" in body.splitlines()[0]
+    assert NOTE not in body
+
+
+def test_a_ready_review_whose_findings_are_all_waived_has_no_note():
+    result = ready_result(with_nit=True)
+    waived = {f["id"]: "selden" for f in result["findings"]}
+    body = render.render(*parts_with(result, waived=waived))
+    assert "Ready" in body.splitlines()[0]
+    assert NOTE not in body
+
+
+def test_by_default_a_push_brings_the_bot_back(parts):
+    note = note_of(render.render(*parts))
+    assert "Push a fix" in note
+    assert "when CI passes" in note
+    assert f"`{policy.HANDLE} re-review`" in note
+
+
+def test_under_review_on_push_first_a_push_alone_starts_nothing():
+    note = note_of(render.render(*parts_with(review_on_push="first")))
+    assert "A push alone does not start a new review" in note
+    assert "Push a fix" not in note
+    assert f"`{policy.HANDLE} re-review`" in note
+
+
+@pytest.mark.parametrize("push", ["always", "first"])
+def test_a_comment_sent_before_ci_passes_waits_for_ci(push):
+    note = note_of(render.render(*parts_with(review_on_push=push)))
+    assert "If CI has not passed yet, the review starts when it passes." in note
+
+
+@pytest.mark.parametrize("push", ["always", "first"])
+def test_without_require_ci_green_a_comment_does_not_wait_for_ci(push):
+    note = note_of(render.render(*parts_with(review_on_push=push, require_ci_green=False)))
+    assert "CI has not passed" not in note
+
+
+def test_the_note_names_the_waiver_and_the_workflow_dispatch(parts):
+    note = note_of(render.render(*parts))
+    assert f"`{policy.HANDLE} waive <finding id>`" in note
+    assert "by hand" in note
+    assert "`force`" in note
+
+
+def test_the_note_itself_never_reads_as_a_waiver(parts):
+    note = note_of(render.render(*parts))
+    quoted = [{"author": "selden", "body": note, "is_maintainer": True}]
+    assert policy.collect_waivers(quoted, {}) == {}
+
+
+def test_the_note_names_what_does_not_start_a_review(parts):
+    note = note_of(render.render(*parts))
+    assert "A plain reply" in note
+    assert "an edit of the description" in note
+    assert '"Re-request review"' in note
+    assert "does not start a review" in note
+
+
+@pytest.mark.parametrize("push", ["always", "first"])
+def test_the_command_in_the_note_passes_the_caller_filter_and_the_bot(push):
+    note = note_of(render.render(*parts_with(review_on_push=push)))
+    command = policy.HANDLE + note.split(f"`{policy.HANDLE}", 1)[1].split("`", 1)[0]
+    # The caller's `if:` is the first filter: a comment that fails it never runs.
+    caller_prefix = CALLER_TEXT.split("startsWith(github.event.comment.body, '", 1)[1]
+    caller_prefix = caller_prefix.split("'", 1)[0]
+    assert command.startswith(caller_prefix)
+    assert command.endswith(" re-review")
+    assert policy.is_bot_command(command)
