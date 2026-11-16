@@ -214,9 +214,18 @@ jobs:
     # no secret material, only whether one is present.
     env:
       HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+    # One group per pull request, for every trigger. A caller that lists
+    # several CI workflows sends one workflow_run per workflow for one push;
+    # with the run id as the key, each one queued for the runner on its own.
+    # GitHub keeps one pending job per group and cancels the older pending
+    # one, so the siblings collapse into one queued job. A CI completion does
+    # not cancel a review in progress: the sibling waits, then skips early on
+    # the reviewed head. A person's comment still cancels the running review,
+    # because the comment forces a new one. A dispatch keeps its own group, so
+    # a pending sibling cannot cancel its `force`.
     concurrency:
-      group: code-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-      cancel-in-progress: true
+      group: code-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name != 'workflow_run' }}
     # Must exceed the credential wait PLUS the review, and the review is not
     # capped at `timeout_minutes`: `Backend.review` is `for attempt in (1, 2)`
     # around a call bounded by it, so one backend can legitimately take twice
@@ -343,7 +352,10 @@ jobs:
 
       # It holds this runner but never the Codex lease, and `|| true` keeps it
       # from failing the job. `head` is the commit it waited for: the review
-      # skips when the pull request has moved past it.
+      # skips when the pull request has moved past it. Before it polls, it
+      # asks whether `reviewbot run` would skip (a reviewed head, a push under
+      # `review_on_push: first`, a draft); then it writes `skip=true`, does not
+      # wait, and every later step that needs the runner stays off.
       - name: Wait for the checks the policy lists
         id: wait
         if: steps.gate.outputs.trusted == 'true'
@@ -353,11 +365,12 @@ jobs:
           REVIEWBOT_FORCE: ${{ inputs.force }}
         run: |
           uv run --project bot reviewbot wait-for-checks \
+            --event "$GITHUB_EVENT_PATH" \
             --pr "${{ steps.pr.outputs.number }}" \
             --repo "$GITHUB_REPOSITORY" || true
 
       - name: Check out the pull request head (read only)
-        if: steps.gate.outputs.trusted == 'true'
+        if: steps.gate.outputs.trusted == 'true' && steps.wait.outputs.skip != 'true'
         uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}
@@ -403,6 +416,7 @@ jobs:
         id: codex
         if: >
           steps.gate.outputs.trusted == 'true' &&
+          steps.wait.outputs.skip != 'true' &&
           inputs.credential-store != '' &&
           env.HAS_OPENAI_API_KEY != 'true'
         env:
@@ -425,7 +439,7 @@ jobs:
             || echo "fetched=false" >> "$GITHUB_OUTPUT"
 
       - name: Install the model CLIs
-        if: steps.gate.outputs.trusted == 'true'
+        if: steps.gate.outputs.trusted == 'true' && steps.wait.outputs.skip != 'true'
         env:
           HAVE_CLAUDE: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
           HAVE_CODEX: ${{ steps.codex.outputs.fetched == 'true' || secrets.OPENAI_API_KEY != '' }}
@@ -444,7 +458,7 @@ jobs:
           fi
 
       - name: Run the review
-        if: steps.gate.outputs.trusted == 'true'
+        if: steps.gate.outputs.trusted == 'true' && steps.wait.outputs.skip != 'true'
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -482,6 +496,7 @@ jobs:
         if: >
           always() &&
           steps.gate.outputs.trusted == 'true' &&
+          steps.wait.outputs.skip != 'true' &&
           inputs.credential-store != '' &&
           env.HAS_OPENAI_API_KEY != 'true'
         env:

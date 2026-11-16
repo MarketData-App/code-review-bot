@@ -224,6 +224,34 @@ def render_check_results(results: list[dict], budget: int = 12000) -> str:
     return "\n".join(lines)
 
 
+def _previous_findings(previous: dict) -> list[str]:
+    """The previous review's open and waived findings as brief lines.
+
+    `previous` is the state the last review left. A state written before the
+    titles were stored has ids only, and the lines say so. Raises nothing.
+    """
+    listed = previous.get("open_findings") or []
+    waived = sorted((previous.get("waived") or {}).keys())
+    lines: list[str] = []
+    if listed:
+        lines.append("- open findings:")
+        for item in listed:
+            where = item.get("file") or "(no file)"
+            if item.get("line"):
+                where += f":{item['line']}"
+            title = " ".join(scrub(str(item.get("title") or "")).split())
+            lines.append(
+                f"  - `{item.get('id', '')}` {item.get('severity', '')}, "
+                f"{item.get('category', '')}, {where}: {title}"
+            )
+    else:
+        ids = ", ".join(previous.get("finding_ids") or []) or "none"
+        lines.append(f"- open finding ids: {ids}")
+    if waived:
+        lines.append(f"- waived finding ids: {', '.join(waived)}")
+    return lines
+
+
 def compose(pr: PRFacts, policy: dict, review_md: str, checkout: str) -> str:
     """The whole brief, in one string."""
     out = [FRAME, "", f"The checkout is at {checkout}. Paths below are relative to it.", ""]
@@ -290,10 +318,14 @@ def compose(pr: PRFacts, policy: dict, review_md: str, checkout: str) -> str:
             "",
             f"- last reviewed commit: {previous['reviewed_sha'][:7]}",
             f"- revision: {previous.get('revision', 1)}",
-            f"- open finding ids: {', '.join(previous.get('finding_ids') or []) or 'none'}",
+        ]
+        out += _previous_findings(previous)
+        out += [
             "",
-            "Report the same defect with the same title, so the engine can tell a "
-            "finding that is still open from a new one.",
+            "The engine knows a finding by its file, category and title. For a "
+            "defect that is still open, copy its file, category and title exactly, "
+            "so it stays the same finding. Do not report a waived finding again. "
+            "Do not report an open defect a second time under a new title.",
             "",
         ]
 

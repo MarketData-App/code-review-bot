@@ -71,6 +71,33 @@ def _finding_lines(finding: dict, meta: dict, waived: dict) -> list[str]:
     return lines
 
 
+# The next review reads these to keep a title. A cap keeps the hidden state
+# small on a pull request with many findings.
+STATE_FINDINGS_LIMIT = 40
+STATE_TITLE_CHARS = 120
+
+
+def open_findings_state(findings_list: list[dict], waived: dict) -> list[dict]:
+    """The open findings as the next review needs them: id, severity, category,
+    file, first line and title. `waived` findings are left out. Raises nothing.
+    """
+    out = []
+    for finding in findings_list:
+        if finding["id"] in (waived or {}):
+            continue
+        out.append(
+            {
+                "id": finding["id"],
+                "severity": finding.get("severity", ""),
+                "category": finding.get("category", ""),
+                "file": finding.get("file") or "",
+                "line": finding.get("line_start") or 0,
+                "title": _scrub(finding.get("title") or "")[:STATE_TITLE_CHARS],
+            }
+        )
+    return out[:STATE_FINDINGS_LIMIT]
+
+
 def render(
     result: dict, meta: dict, policy: dict, decisions: Decisions, since: dict, waived: dict
 ) -> str:
@@ -177,6 +204,7 @@ def render(
         "proof_status": proof["status"],
         "decision_open": bool(result.get("decision")) and policy["decision_packets"],
         "finding_ids": [f["id"] for f in result["findings"]],
+        "open_findings": open_findings_state(result["findings"], waived),
         "waived": waived,
     }
     out.append(markers.emit(state))

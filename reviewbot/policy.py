@@ -120,6 +120,44 @@ def should_skip(
     return None
 
 
+def early_skip(
+    pull: dict,
+    policy: dict,
+    previous_comment: dict | None,
+    comments_since: list[dict],
+    *,
+    automatic: bool,
+    force: bool = False,
+) -> str | None:
+    """The skips `should_skip` makes that need no diff and no CI read.
+
+    `pull` is the pull request as the API returns it, `previous_comment` the
+    bot's review comment or None, `comments_since` the comments after it,
+    `automatic` whether a push started the run, and `force` whether a person
+    forced the review. The wait step asks this before it polls, so a run that
+    `reviewbot run` would skip does not hold the runner for the wait and the
+    setup first. Returns the reason, or None; raises nothing.
+    """
+    if force:
+        return None
+    if pull.get("draft") and not policy["review_drafts"]:
+        return "the pull request is a draft"
+    author = (pull.get("user") or {}).get("login", "")
+    if author in policy["ignore_authors"]:
+        return f"the author {author} is in ignore_authors"
+    if "[skip review]" in (pull.get("title") or "").lower():
+        return "the title carries [skip review]"
+    asked = any(is_bot_command(c.get("body", "")) for c in comments_since or [])
+    head = (pull.get("head") or {}).get("sha", "")
+    if is_bot_review(previous_comment) and not asked:
+        reviewed = markers.parse(previous_comment.get("body")).get("reviewed_sha")
+        if head and reviewed == head:
+            return "this commit has already been reviewed"
+    if automatic:
+        return push_skip(policy, previous_comment, comments_since)
+    return None
+
+
 def push_skip(
     policy: dict, previous_comment: dict | None, comments_since: list[dict]
 ) -> str | None:
@@ -237,13 +275,24 @@ def decide(result: dict, pr: PRFacts, policy: dict, waived: dict) -> Decisions:
         reasons.append(f"{len(blocking)} blocking finding(s) remain open")
 
     proof_status = result["proof"]["status"]
-    proof_unmet = proof_status in ("missing", "insufficient") and proof_applies(pr, policy)
+    proof_short = proof_status in ("missing", "insufficient")
+    proof_unmet = proof_short and proof_applies(pr, policy)
     if proof_unmet and PROOF_WAIVED_LABEL in pr.labels:
         reasons.append("the proof gate is waived by a maintainer label")
         proof_unmet = False
-    if proof_unmet:
+    soft_proof = policy["proof"]["unmet_verdict"] == "needs_changes"
+    if proof_unmet and not soft_proof:
         verdict = "blocked"
         reasons.append("runtime evidence is missing for this change")
+    elif proof_unmet and verdict == "ready":
+        verdict = "needs_changes"
+        reasons.append("runtime evidence is missing for this change")
+    # A model that blocks for proof alone: no blocking finding and no open
+    # decision says the block has nothing else behind it.
+    open_decision = bool(result.get("decision")) and policy["decision_packets"]
+    if soft_proof and proof_short and verdict == "blocked" and not blocking and not open_decision:
+        verdict = "needs_changes"
+        reasons.append("the only thing missing is runtime evidence, which does not block")
 
     if policy["require_ci_green"] and pr.ci_state == "failure":
         verdict = "blocked"

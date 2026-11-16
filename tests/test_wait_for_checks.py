@@ -45,12 +45,14 @@ class FakeGitHub:
     """Answers the pull request, the policy, and one scripted read of the check
     runs per call, repeating the last one; records what each read asked for."""
 
-    def __init__(self, policy, reads, files=("src/client.py",)):
-        """Keep the policy text, the reads and the changed files, with no
-        request recorded yet."""
+    def __init__(self, policy, reads, files=("src/client.py",), comments=(), pull=None):
+        """Keep the policy text, the reads, the changed files, the issue
+        comments and the pull request, with no request recorded yet."""
         self.policy = policy
         self.reads = list(reads)
         self.files = list(files)
+        self.comments = list(comments)
+        self.pull = pull or {"base": {"ref": "release/2.0"}, "head": {"sha": "abc"}}
         self.policy_reads = []
         self.check_reads = []
 
@@ -60,8 +62,12 @@ class FakeGitHub:
         return len(self.check_reads)
 
     def pull_request(self, number):
-        """A pull request from `abc` into `release/2.0`."""
-        return {"base": {"ref": "release/2.0"}, "head": {"sha": "abc"}}
+        """By default, a pull request from `abc` into `release/2.0`."""
+        return self.pull
+
+    def issue_comments(self, number):
+        """The pull request's issue comments."""
+        return self.comments
 
     def file_at_ref(self, path, ref):
         """The policy text, recording the path and ref asked for."""
@@ -412,6 +418,7 @@ def test_the_real_client_reads_the_base_policy_and_the_head_check_runs(capsys):
     assert [call["path"] for call in transport.calls] == [
         "/repos/o/r/pulls/1",
         "/repos/o/r/contents/.github/code-review/policy.yml?ref=release/2.0",
+        "/repos/o/r/issues/1/comments?per_page=100&page=1",
         "/repos/o/r/pulls/1/files?per_page=100&page=1",
         "/repos/o/r/commits/abc/check-runs?per_page=100",
     ]
@@ -427,7 +434,7 @@ def test_the_command_reaches_the_wait(monkeypatch):
 
     assert cli.main(["wait-for-checks", "--pr", "7", "--repo", "o/r"]) == 0
 
-    assert seen == {"repo": "o/r", "token": "t", "pr_number": 7, "force": False}
+    assert seen == {"repo": "o/r", "token": "t", "pr_number": 7, "force": False, "event": {}}
 
 
 def test_a_forced_run_reaches_the_wait_as_forced(monkeypatch):
@@ -441,3 +448,175 @@ def test_a_forced_run_reaches_the_wait_as_forced(monkeypatch):
     assert cli.main(["wait-for-checks", "--pr", "7", "--repo", "o/r"]) == 0
 
     assert seen["force"] is True
+
+
+def review_comment(sha, login="marketdata-code-review[bot]"):
+    """The bot's review comment for `sha`, written by `login`."""
+    body = f'<!-- marketdata-code-review -->\n<!-- reviewbot-state: {{"reviewed_sha":"{sha}"}} -->'
+    return {
+        "body": body,
+        "user": {"login": login},
+        "updated_at": "2026-11-16T10:00:00Z",
+        "created_at": "2026-11-16T10:00:00Z",
+    }
+
+
+def command(text, at="2026-11-16T11:00:00Z"):
+    """A maintainer's comment after the review."""
+    return {
+        "body": text,
+        "user": {"login": "dev"},
+        "author_association": "MEMBER",
+        "created_at": at,
+    }
+
+
+WORKFLOW_RUN = {"workflow_run": {"head_sha": "abc", "pull_requests": [{"number": 1}]}}
+COMMENT_EVENT = {"issue": {"number": 1, "pull_request": {}}, "comment": {"body": "x"}}
+
+
+def test_an_already_reviewed_head_skips_before_the_wait(tmp_path, monkeypatch, capsys):
+    """A sibling CI completion on a reviewed head does not wait, and tells the
+    later steps to skip, so it holds the runner for seconds, not minutes."""
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    api = FakeGitHub(LISTED, [[actions()]], comments=[review_comment("abc")])
+    clock = FakeClock()
+
+    assert (
+        cli.wait_for_checks(
+            repo="o/r",
+            token="t",
+            pr_number=1,
+            event=WORKFLOW_RUN,
+            api=api,
+            sleep=clock.sleep,
+            clock=clock,
+        )
+        == 0
+    )
+
+    assert api.seen == 0
+    assert clock.waited == 0
+    assert output.read_text() == "skip=true\n"
+    assert "already been reviewed" in capsys.readouterr().out
+
+
+def test_a_push_under_review_on_push_first_skips_before_the_wait(tmp_path, monkeypatch):
+    """A new head on a reviewed pull request skips under `first`, as preflight does."""
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    policy = LISTED + "review_on_push: first\n"
+    api = FakeGitHub(policy, [[actions()]], comments=[review_comment("old")])
+
+    assert (
+        cli.wait_for_checks(
+            repo="o/r",
+            token="t",
+            pr_number=1,
+            event=WORKFLOW_RUN,
+            api=api,
+            sleep=FakeClock().sleep,
+            clock=FakeClock(),
+        )
+        == 0
+    )
+
+    assert api.seen == 0
+    assert output.read_text() == "skip=true\n"
+
+
+def test_a_re_review_command_on_a_reviewed_head_still_waits(tmp_path, monkeypatch):
+    """A person who asked gets the review, so the early skip says nothing."""
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    api = FakeGitHub(
+        LISTED,
+        [[actions(), *BOTH]],
+        comments=[review_comment("abc"), command("@marketdata-code-review re-review")],
+    )
+
+    assert (
+        cli.wait_for_checks(
+            repo="o/r",
+            token="t",
+            pr_number=1,
+            event=COMMENT_EVENT,
+            api=api,
+            sleep=FakeClock().sleep,
+            clock=FakeClock(),
+        )
+        == 0
+    )
+
+    assert api.seen == 1
+    assert output.read_text() == "head=abc\n"
+
+
+def test_a_pasted_marker_does_not_skip(tmp_path, monkeypatch):
+    """Only this App's comment counts as a review."""
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    api = FakeGitHub(LISTED, [[actions(), *BOTH]], comments=[review_comment("abc", "someone")])
+
+    assert (
+        cli.wait_for_checks(
+            repo="o/r",
+            token="t",
+            pr_number=1,
+            event=WORKFLOW_RUN,
+            api=api,
+            sleep=FakeClock().sleep,
+            clock=FakeClock(),
+        )
+        == 0
+    )
+
+    assert "skip=true" not in output.read_text()
+
+
+def test_a_draft_skips_before_the_wait(tmp_path, monkeypatch):
+    """`reviewbot run` skips a draft, so the wait does not hold the runner for it."""
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    pull = {"base": {"ref": "main"}, "head": {"sha": "abc"}, "draft": True}
+    api = FakeGitHub(LISTED, [[actions()]], pull=pull)
+
+    assert (
+        cli.wait_for_checks(
+            repo="o/r",
+            token="t",
+            pr_number=1,
+            event=WORKFLOW_RUN,
+            api=api,
+            sleep=FakeClock().sleep,
+            clock=FakeClock(),
+        )
+        == 0
+    )
+
+    assert api.seen == 0
+    assert output.read_text() == "skip=true\n"
+
+
+def test_a_failed_comment_read_does_not_skip(tmp_path, monkeypatch):
+    """The early skip is only a saving: a read error leaves the run to decide."""
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    api = FakeGitHub(LISTED, [[actions(), *BOTH]])
+    api.issue_comments = lambda number: (_ for _ in ()).throw(GitHubError("502"))
+
+    assert (
+        cli.wait_for_checks(
+            repo="o/r",
+            token="t",
+            pr_number=1,
+            event=WORKFLOW_RUN,
+            api=api,
+            sleep=FakeClock().sleep,
+            clock=FakeClock(),
+        )
+        == 0
+    )
+
+    assert output.read_text() == "head=abc\n"

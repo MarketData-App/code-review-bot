@@ -776,3 +776,65 @@ def test_the_push_rule_reads_the_same_facts_the_preflight_job_reads():
     assert policy.push_skip(pol, bot_comment(), []) is not None
     assert policy.push_skip(pol, None, []) is None
     assert policy.push_skip(config.defaults(), bot_comment(), []) is None
+
+
+# --- proof.unmet_verdict ------------------------------------------------------
+
+
+@pytest.fixture
+def soft_proof():
+    """The proof gate on, with unmet proof as `needs_changes`."""
+    pol = config.defaults()
+    pol["proof"]["required"] = True
+    pol["proof"]["unmet_verdict"] = "needs_changes"
+    return pol
+
+
+def test_the_default_unmet_verdict_still_blocks(proof_gated):
+    assert proof_gated["proof"]["unmet_verdict"] == "blocked"
+    d = policy.decide(make_result("ready", proof="missing"), make_pr(), proof_gated, {})
+    assert d.verdict == "blocked"
+
+
+def test_soft_proof_turns_ready_into_needs_changes(soft_proof):
+    d = policy.decide(make_result("ready", proof="missing"), make_pr(), soft_proof, {})
+    assert d.verdict == "needs_changes"
+    assert d.conclusion == "neutral"
+    assert "review: needs proof" in d.labels_add
+
+
+def test_soft_proof_lowers_a_model_block_for_proof_alone(soft_proof):
+    d = policy.decide(make_result("blocked", proof="insufficient"), make_pr(), soft_proof, {})
+    assert d.verdict == "needs_changes"
+    assert "review: needs proof" in d.labels_add
+
+
+def test_soft_proof_keeps_a_block_with_a_blocking_finding(soft_proof):
+    result = make_result("blocked", proof="missing", severities=("blocking",))
+    d = policy.decide(result, make_pr(), soft_proof, {})
+    assert d.verdict == "blocked"
+    assert d.conclusion == "failure"
+
+
+def test_soft_proof_keeps_a_block_with_an_open_decision(soft_proof):
+    decision = {"question": "q", "options": ["a", "b"], "recommendation": "a"}
+    result = make_result("blocked", proof="missing", decision=decision)
+    d = policy.decide(result, make_pr(), soft_proof, {})
+    assert d.verdict == "blocked"
+
+
+def test_soft_proof_keeps_a_block_for_red_ci(soft_proof):
+    d = policy.decide(
+        make_result("blocked", proof="missing"), make_pr(ci_state="failure"), soft_proof, {}
+    )
+    assert d.verdict == "blocked"
+
+
+def test_soft_proof_does_not_lower_a_block_when_proof_is_sufficient(soft_proof):
+    d = policy.decide(make_result("blocked", proof="sufficient"), make_pr(), soft_proof, {})
+    assert d.verdict == "blocked"
+
+
+def test_an_unknown_unmet_verdict_is_refused():
+    with pytest.raises(config.PolicyError, match="unmet_verdict"):
+        config.load("proof:\n  unmet_verdict: maybe\n")
