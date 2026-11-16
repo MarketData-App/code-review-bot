@@ -320,3 +320,104 @@ def test_no_token_shaped_string_reaches_the_comment(parts):
 def test_check_title_is_short(parts):
     title = render.check_title(parts[3])
     assert len(title) <= 60
+
+
+# --- How to get a new review ----------------------------------------------
+#
+# An author whose pull request is not ready needs to know what brings the bot
+# back. Only the caller workflow's triggers do (docs/caller-workflow.yml): CI
+# finishing green after a push, a comment that starts with the handle and
+# `re-review`, and a workflow dispatch. Under `review_on_push: first` the push
+# stops counting once the first review is posted.
+
+NOTE = "### How to get a new review"
+
+
+def parts_with(result=None, **policy_over):
+    pol = config.defaults()
+    pol.update(policy_over)
+    result = result or make_result()
+    decisions = policy.decide(result, make_pr(), pol, {})
+    since = findings.since_last_review([], result["findings"])
+    return result, META, pol, decisions, since, {}
+
+
+def ready_result():
+    return make_result(
+        findings=[],
+        proof={"status": "sufficient", "ask": None},
+        verdict={"value": "ready", "reason": "Nothing to change."},
+    )
+
+
+def note_of(body: str) -> str:
+    """The note alone: from its heading to the footer rule."""
+    start = body.index(NOTE)
+    return body[start : body.index("\n---\n", start)]
+
+
+def test_a_blocked_review_ends_with_how_to_get_a_new_review():
+    body = render.render(*gated_parts())
+    assert "Blocked" in body.splitlines()[0]
+    assert NOTE in body
+    # Last before the footer, so it is the thing an author reads at the end.
+    assert body.index(NOTE) > body.index("### Findings")
+    assert "### " not in note_of(body)[len(NOTE) :]
+
+
+def test_a_review_that_needs_changes_carries_the_note_too(parts):
+    assert "Needs changes" in render.render(*parts).splitlines()[0]
+    assert NOTE in render.render(*parts)
+
+
+def test_a_ready_review_has_no_note():
+    body = render.render(*parts_with(ready_result()))
+    assert "Ready" in body.splitlines()[0]
+    assert NOTE not in body
+
+
+def test_by_default_a_push_brings_the_bot_back(parts):
+    note = note_of(render.render(*parts))
+    assert "Push a fix" in note
+    assert "when CI passes" in note
+    assert f"`{policy.HANDLE} re-review`" in note
+
+
+def test_under_review_on_push_first_a_push_alone_starts_nothing():
+    note = note_of(render.render(*parts_with(review_on_push="first")))
+    assert "A push alone does not start a new review" in note
+    assert "Push a fix" not in note
+    assert f"`{policy.HANDLE} re-review`" in note
+
+
+def test_under_first_a_comment_sent_before_ci_passes_waits_for_ci():
+    note = note_of(render.render(*parts_with(review_on_push="first")))
+    assert "If CI has not passed yet, the review starts when it passes." in note
+
+
+def test_without_require_ci_green_a_comment_does_not_wait_for_ci():
+    note = note_of(render.render(*parts_with(review_on_push="first", require_ci_green=False)))
+    assert "CI has not passed" not in note
+
+
+def test_the_note_names_the_workflow_dispatch(parts):
+    note = note_of(render.render(*parts))
+    assert "by hand" in note
+    assert "`force`" in note
+
+
+def test_the_note_names_what_does_not_start_a_review(parts):
+    note = note_of(render.render(*parts))
+    assert "A plain reply" in note
+    assert "an edit of the description" in note
+    assert '"Re-request review"' in note
+    assert "does not start a review" in note
+
+
+@pytest.mark.parametrize("push", ["always", "first"])
+def test_the_command_in_the_note_is_one_the_bot_obeys(push):
+    note = note_of(render.render(*parts_with(review_on_push=push)))
+    command = note.split(f"`{policy.HANDLE}", 1)[1].split("`", 1)[0]
+    command = f"{policy.HANDLE}{command}"
+    assert policy.is_bot_command(command)
+    assert policy.wants_rereview(command)

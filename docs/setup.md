@@ -291,6 +291,10 @@ current head starts when a person comments `@marketdata-code-review re-review`
 while CI is still running is served by the CI run that ends next. The caller
 workflow needs no change.
 
+Every review that is not ready ends with "How to get a new review", which
+names these ways for the repository's `review_on_push` setting. A plain reply,
+an edit of the description or GitHub's "Re-request review" starts no review.
+
 Under `first`, the review comment, its check run and its labels describe the
 commit the comment names, not later pushes. So `first` cannot be combined with
 `auto_approve` or `auto_merge.enabled`: an approval or an armed auto-merge
