@@ -72,38 +72,41 @@ def _finding_lines(finding: dict, meta: dict, waived: dict) -> list[str]:
 
 
 def new_review_note(policy: dict) -> list[str]:
-    """How the author gets a new review, for a review that is not ready.
+    """How the author gets a new review, for a review the author must act on.
 
     It names only what really starts a review, the caller workflow's triggers
     (docs/caller-workflow.yml): CI finishing green after a push, a comment
-    that starts with the handle and `re-review`, and a workflow dispatch. A
+    that starts with the handle and a command, and a workflow dispatch. A
     body edit is not one: the caller has no `pull_request_target`. Under
     `review_on_push: first` a push after the first review starts nothing, so
     the note says so instead of telling the author to push.
     """
     command = f"`{HANDLE} re-review`"
+    # A comment sent before CI passes skips for CI, and the CI run that ends
+    # next serves it (policy.should_skip, policy.push_skip). Without
+    # require_ci_green the comment is served at once.
+    wait = (
+        " If CI has not passed yet, the review starts when it passes."
+        if policy["require_ci_green"]
+        else ""
+    )
     if policy["review_on_push"] == "first":
-        # A comment sent while CI runs skips for CI; the CI run that ends
-        # next serves it (policy.push_skip). Without require_ci_green the
-        # comment is served at once, so the sentence would be wrong there.
-        wait = " If CI has not passed yet, the review starts when it passes."
         ways = [
             "- A push alone does not start a new review in this repository.",
-            f"- Post a comment that starts with {command}."
-            + (wait if policy["require_ci_green"] else ""),
+            f"- Post a comment that starts with {command}.{wait}",
         ]
     else:
         ways = [
             "- Push a fix. The bot reviews the new commit when CI passes.",
             "- To review the same commit again, for example after you add proof to the "
-            f"description, post a comment that starts with {command}.",
+            f"description, post a comment that starts with {command}.{wait}",
         ]
     return [
         "### How to get a new review",
         "",
         *ways,
-        "- A maintainer can also run the review workflow by hand with this pull request's "
-        "number (`force` reviews the same commit again).",
+        f"- A maintainer can also comment `{HANDLE} waive <finding id>`, or run the review "
+        "workflow by hand for this pull request (`force` reviews the same commit again).",
         '- A plain reply, an edit of the description or GitHub\'s "Re-request review" '
         "does not start a review.",
         "",
@@ -197,8 +200,9 @@ def render(
         out.append("")
 
     # A plain reply or a "Re-request review" brings no bot back, and an author
-    # who does not know that waits on a stale review.
-    if decisions.verdict != "ready":
+    # who does not know that waits on a stale review. A ready review with open
+    # findings needs it too: under `first` a fix push is not reviewed.
+    if decisions.verdict != "ready" or open_findings:
         out += new_review_note(policy)
 
     ran = ", ".join(f"{name} ({meta['models'].get(name, '?')})" for name in meta["backends"])
