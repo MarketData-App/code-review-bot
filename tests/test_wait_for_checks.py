@@ -430,6 +430,7 @@ def test_the_command_reaches_the_wait(monkeypatch):
     seen = {}
     monkeypatch.setenv("GITHUB_TOKEN", "t")
     monkeypatch.delenv("REVIEWBOT_FORCE", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
     monkeypatch.setattr(cli, "wait_for_checks", lambda **kwargs: seen.update(kwargs) or 0)
 
     assert cli.main(["wait-for-checks", "--pr", "7", "--repo", "o/r"]) == 0
