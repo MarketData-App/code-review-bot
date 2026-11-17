@@ -151,6 +151,137 @@ def test_a_nonzero_exit_raises(policy, bin_dir, claude_env, tmp_path):
     assert "exit" in str(excinfo.value).lower()
 
 
+# The shape Claude Code 2.1 prints for a failed turn: the usage, the cost and
+# the model usage come first, the fields that name the cause come last. Copied
+# from api run 44023357767, with `modelUsage` padded to its real length.
+FAILURE_ENVELOPE = {
+    "duration_api_ms": 9035,
+    "stop_reason": "stop_sequence",
+    "session_id": "5b2f8426-8496-402f-ac23-30d0010f392f",
+    "total_cost_usd": 7.00169,
+    "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 699608,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 224,
+        "output_tokens_details": {"thinking_tokens": 137},
+        "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+    },
+    "modelUsage": {"claude-opus-5": {"inputTokens": 2, "padding": "x" * 400}},
+    "permission_denials": [],
+    "terminal_reason": "api_error",
+    "is_error": True,
+    "num_turns": 2,
+    "subtype": "success",
+    "api_error_status": 400,
+    "result": "API Error: the cause of this failure",
+    "type": "result",
+    "duration_ms": 41000,
+}
+
+
+def _envelope_script(envelope: dict, exit_code: int, stderr: str = "") -> str:
+    return f"""
+import json, sys
+sys.stdin.read()
+if {stderr!r}:
+    print({stderr!r}, file=sys.stderr)
+print(json.dumps(json.loads({json.dumps(envelope)!r})))
+sys.exit({exit_code})
+"""
+
+
+def test_a_failure_envelope_longer_than_300_chars_still_names_its_cause(
+    policy, bin_dir, claude_env, tmp_path
+):
+    assert len(json.dumps(FAILURE_ENVELOPE)) > 300
+    write_script(bin_dir, "claude", _envelope_script(FAILURE_ENVELOPE, exit_code=1))
+    with pytest.raises(base.BackendError) as excinfo:
+        base.build("claude", policy, str(tmp_path)).review("BRIEF")
+    message = str(excinfo.value)
+    assert "exit 1" in message
+    assert "the cause of this failure" in message
+    assert '"subtype": "success"' in message
+    assert '"is_error": true' in message
+    assert '"api_error_status": 400' in message
+    assert '"terminal_reason": "api_error"' in message
+    assert '"num_turns": 2' in message
+    # The numbers that used to fill the line are not the cause.
+    assert "cache_creation_input_tokens" not in message
+
+
+def test_a_failure_envelope_names_its_errors_list(policy, bin_dir, claude_env, tmp_path):
+    envelope = dict(FAILURE_ENVELOPE, subtype="error_during_execution")
+    del envelope["result"]
+    envelope["errors"] = ["the tool call failed"]
+    write_script(bin_dir, "claude", _envelope_script(envelope, exit_code=1))
+    with pytest.raises(base.BackendError) as excinfo:
+        base.build("claude", policy, str(tmp_path)).review("BRIEF")
+    message = str(excinfo.value)
+    assert '"subtype": "error_during_execution"' in message
+    assert "the tool call failed" in message
+
+
+def test_a_stderr_warning_does_not_hide_the_envelope(policy, bin_dir, claude_env, tmp_path):
+    # The CLI prints notices on stderr, a sign-in expiry warning among them.
+    # The old line preferred stderr, so a warning replaced the cause.
+    script = _envelope_script(
+        FAILURE_ENVELOPE, exit_code=1, stderr="Warning: this sign-in can end at any time"
+    )
+    write_script(bin_dir, "claude", script)
+    with pytest.raises(base.BackendError) as excinfo:
+        base.build("claude", policy, str(tmp_path)).review("BRIEF")
+    assert "the cause of this failure" in str(excinfo.value)
+
+
+def test_an_is_error_envelope_on_exit_zero_names_its_cause(policy, bin_dir, claude_env, tmp_path):
+    write_script(bin_dir, "claude", _envelope_script(FAILURE_ENVELOPE, exit_code=0))
+    with pytest.raises(base.BackendError) as excinfo:
+        base.build("claude", policy, str(tmp_path)).review("BRIEF")
+    message = str(excinfo.value)
+    assert "the cause of this failure" in message
+    assert '"api_error_status": 400' in message
+
+
+def test_the_cause_is_redacted(policy, bin_dir, claude_env, tmp_path):
+    token = "ghp_" + "a" * 36
+    envelope = dict(FAILURE_ENVELOPE, result=f"API Error: echoed {token}")
+    write_script(bin_dir, "claude", _envelope_script(envelope, exit_code=1))
+    with pytest.raises(base.BackendError) as excinfo:
+        base.build("claude", policy, str(tmp_path)).review("BRIEF")
+    message = str(excinfo.value)
+    assert token not in message
+    assert "[redacted]" in message
+
+
+def test_a_long_result_is_cut_but_keeps_its_start(policy, bin_dir, claude_env, tmp_path):
+    envelope = dict(FAILURE_ENVELOPE, result="API Error: " + "y" * 5000)
+    write_script(bin_dir, "claude", _envelope_script(envelope, exit_code=1))
+    with pytest.raises(base.BackendError) as excinfo:
+        base.build("claude", policy, str(tmp_path)).review("BRIEF")
+    message = str(excinfo.value)
+    assert "API Error: yyy" in message
+    assert len(message) < 2000
+
+
+def test_a_nonzero_exit_without_an_envelope_keeps_the_last_line(
+    policy, bin_dir, claude_env, tmp_path
+):
+    script = """
+import sys
+sys.stdin.read()
+print("first line", file=sys.stderr)
+print("Error: the CLI crashed", file=sys.stderr)
+sys.exit(2)
+"""
+    write_script(bin_dir, "claude", script)
+    with pytest.raises(base.BackendError) as excinfo:
+        base.build("claude", policy, str(tmp_path)).review("BRIEF")
+    message = str(excinfo.value)
+    assert "exit 2" in message
+    assert "Error: the CLI crashed" in message
+
+
 def test_an_is_error_envelope_raises(policy, bin_dir, claude_env, tmp_path):
     script = """
 import json, sys
