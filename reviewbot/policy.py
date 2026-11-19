@@ -287,10 +287,14 @@ def decide(result: dict, pr: PRFacts, policy: dict, waived: dict) -> Decisions:
     elif proof_unmet and verdict == "ready":
         verdict = "needs_changes"
         reasons.append("runtime evidence is missing for this change")
-    # A model that blocks for proof alone: no blocking finding and no open
-    # decision says the block has nothing else behind it.
+    # A model that blocks for proof alone: no blocking finding, no open
+    # decision and no red CI says the block has nothing else behind it. Red CI
+    # counts even when `require_ci_green` is off, so it is checked here.
     open_decision = bool(result.get("decision")) and policy["decision_packets"]
-    if soft_proof and proof_short and verdict == "blocked" and not blocking and not open_decision:
+    proof_only_block = (
+        verdict == "blocked" and not blocking and not open_decision and pr.ci_state != "failure"
+    )
+    if soft_proof and proof_short and proof_only_block:
         verdict = "needs_changes"
         reasons.append("the only thing missing is runtime evidence, which does not block")
 

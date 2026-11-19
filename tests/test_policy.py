@@ -838,3 +838,25 @@ def test_soft_proof_does_not_lower_a_block_when_proof_is_sufficient(soft_proof):
 def test_an_unknown_unmet_verdict_is_refused():
     with pytest.raises(config.PolicyError, match="unmet_verdict"):
         config.load("proof:\n  unmet_verdict: maybe\n")
+
+
+def test_soft_proof_keeps_a_block_for_red_ci_when_red_ci_does_not_gate(soft_proof):
+    soft_proof["require_ci_green"] = False
+    d = policy.decide(
+        make_result("blocked", proof="missing"), make_pr(ci_state="failure"), soft_proof, {}
+    )
+    assert d.verdict == "blocked"
+
+
+def test_soft_proof_lowers_a_proof_only_block_when_the_gate_does_not_apply(soft_proof):
+    # A repository that does not need proof for this change must not be
+    # blocked for missing proof either.
+    soft_proof["proof"]["paths"] = ["src/**"]
+    d = policy.decide(make_result("blocked", proof="missing"), make_pr(), soft_proof, {})
+    assert d.verdict == "needs_changes"
+
+
+def test_soft_proof_lowers_a_proof_only_block_under_the_waiver_label(soft_proof):
+    pr = make_pr(labels=[policy.PROOF_WAIVED_LABEL])
+    d = policy.decide(make_result("blocked", proof="missing"), pr, soft_proof, {})
+    assert d.verdict == "needs_changes"
