@@ -224,6 +224,11 @@ def render_check_results(results: list[dict], budget: int = 12000) -> str:
     return "\n".join(lines)
 
 
+def _flat(value) -> str:
+    """`value` as one scrubbed line with single spaces."""
+    return " ".join(scrub(str(value if value is not None else "")).split())
+
+
 def _previous_findings(previous: dict) -> list[str]:
     """The previous review's open and waived findings as brief lines.
 
@@ -236,16 +241,22 @@ def _previous_findings(previous: dict) -> list[str]:
     if listed:
         lines.append("- open findings:")
         for item in listed:
-            where = item.get("file") or "(no file)"
+            # Every field came from model output, so each one is flattened:
+            # a newline in any of them could start a line of its own here.
+            where = _flat(item.get("file")) or "(no file)"
             if item.get("line"):
-                where += f":{item['line']}"
-            title = " ".join(scrub(str(item.get("title") or "")).split())
+                where += f":{_flat(item['line'])}"
             lines.append(
-                f"  - `{item.get('id', '')}` {item.get('severity', '')}, "
-                f"{item.get('category', '')}, {where}: {title}"
+                f"  - `{_flat(item.get('id'))}` {_flat(item.get('severity'))}, "
+                f"{_flat(item.get('category'))}, {where}: {_flat(item.get('title'))}"
             )
+        # The state stores at most STATE_FINDINGS_LIMIT findings in full.
+        shown = {str(item.get("id")) for item in listed} | set(waived)
+        rest = [i for i in previous.get("finding_ids") or [] if i not in shown]
+        if rest:
+            lines.append(f"- more open finding ids: {', '.join(_flat(i) for i in rest)}")
     else:
-        ids = ", ".join(previous.get("finding_ids") or []) or "none"
+        ids = ", ".join(_flat(i) for i in previous.get("finding_ids") or []) or "none"
         lines.append(f"- open finding ids: {ids}")
     if waived:
         lines.append(f"- waived finding ids: {', '.join(waived)}")
