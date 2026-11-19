@@ -169,6 +169,8 @@ settings. `docs/CREDITS.md` names the prior work this design follows.
 
 ## Developing
 
+Requires Python 3.12 or later.
+
 ```bash
 uv sync --extra dev
 uv run pytest
