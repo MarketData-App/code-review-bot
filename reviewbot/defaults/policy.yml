@@ -55,6 +55,12 @@ proof:
   # means the gate applies to every pull request.
   # Note the asymmetry with auto_approve_paths below, which is ALL-match.
   paths: []
+  # The verdict for missing or insufficient proof when no blocking finding is
+  # open. `blocked` fails the check run under `gate: true`. `needs_changes`
+  # keeps the "needs proof" label and the ask under "Before merge", and the
+  # check run is neutral. It also lowers a model verdict of `blocked` that has
+  # no blocking finding, no open decision and no red CI behind it.
+  unmet_verdict: blocked       # blocked | needs_changes
 ratings: true                  # show the 1-6 tier row
 decision_packets: true         # allow "decision needed" escalation
 auto_approve: false            # approve via PR review when clean

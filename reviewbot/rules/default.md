@@ -63,8 +63,11 @@ guess.
 A new comment states the constraint a reader cannot infer from the code, and
 nothing else. Issue numbers, dates and incident narrative belong in the commit
 message and the pull request description, where they are searchable and where
-they do not go stale. A new comment carrying `(issue #NNN)` or a date is a
-`nit`. A regression test may keep its issue reference.
+they do not go stale. New comments carrying `(issue #NNN)` or a date are one
+`nit` for the whole pull request: one finding, with every location listed in
+its body, never one finding per comment. Report it in the first review only.
+On a re-review, report it again only when a commit since the last review adds
+a new reference. A regression test may keep its issue reference.
 
 ## Tests and the clock
 

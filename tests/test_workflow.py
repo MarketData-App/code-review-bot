@@ -58,8 +58,37 @@ def test_the_runner_comes_from_the_input_when_one_is_given():
 
 def test_the_job_cancels_an_older_run_on_the_same_pr():
     concurrency = REVIEW["jobs"]["review"]["concurrency"]
-    assert concurrency["cancel-in-progress"] is True
     assert "pull_request.number" in concurrency["group"]
+    assert "issue.number" in concurrency["group"]
+
+
+def test_sibling_ci_completions_share_one_group_per_pull_request():
+    """Tests, Lint and Schema finish one push three times. With one group per
+    pull request, GitHub keeps one pending job, not three."""
+    group = REVIEW["jobs"]["review"]["concurrency"]["group"]
+    assert "workflow_run.pull_requests[0].number" in group
+    assert group.index("issue.number") < group.index("workflow_run") < group.index("run_id")
+
+
+def test_a_ci_completion_never_cancels_a_review_in_progress():
+    """Only a person's comment cancels the running review; a CI completion waits."""
+    cancel = REVIEW["jobs"]["review"]["concurrency"]["cancel-in-progress"]
+    assert cancel == "${{ github.event_name != 'workflow_run' }}"
+
+
+def test_every_step_after_the_wait_obeys_its_skip():
+    """A run the wait says will skip holds the runner for no checkout, no lease,
+    no install and no review."""
+    steps = {step["name"]: step for step in REVIEW["jobs"]["review"]["steps"]}
+    assert "--event" in steps["Wait for the checks the policy lists"]["run"]
+    for name in (
+        "Check out the pull request head (read only)",
+        "Borrow the Codex credential",
+        "Install the model CLIs",
+        "Run the review",
+        "Return the Codex credential",
+    ):
+        assert "steps.wait.outputs.skip != 'true'" in steps[name]["if"], name
 
 
 def test_the_job_asks_for_no_write_permission_of_its_own():

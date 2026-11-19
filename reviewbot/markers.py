@@ -19,6 +19,10 @@ _STATE_RE = re.compile(r"<!--\s*reviewbot-state:\s*(\{.*?\})\s*-->")
 def emit(state: dict) -> str:
     """The marker line and the state line, both HTML comments."""
     payload = json.dumps(state, separators=(",", ":"), sort_keys=True)
+    # The state now carries finding titles, which the model wrote. Escaped
+    # angle brackets keep a `-->` in a title from closing the HTML comment;
+    # json.loads reads the escapes back as the same characters.
+    payload = payload.replace("<", "\\u003c").replace(">", "\\u003e")
     return f"{MARKER}\n<!-- reviewbot-state: {payload} -->"
 
 

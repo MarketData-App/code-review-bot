@@ -310,6 +310,7 @@ def wait_for_checks(
     token: str,
     pr_number: int,
     force: bool = False,
+    event: dict | None = None,
     api=None,
     sleep=_time.sleep,
     clock=_time.monotonic,
@@ -319,15 +320,28 @@ def wait_for_checks(
     `wait_for_checks_seconds` and not at all when every changed file matches
     `ignore_paths`, and write the commit it polled as the step output `head`.
 
+    Before it polls, it asks `policy_mod.early_skip`. When the run will skip
+    anyway, it writes `skip=true` and does not wait, so the later steps do not
+    hold the runner for a review that `reviewbot run` would refuse.
+
     `repo`, `token` and `pr_number` name the pull request, `force` skips the
-    wait, and `api`, `sleep` and `clock` replace the GitHub client, the sleep
-    and the monotonic clock. Returns 0 and raises nothing: what it cannot read,
-    and whether to review at all, it leaves to `reviewbot run`.
+    wait, `event` is the triggering payload, and `api`, `sleep` and `clock`
+    replace the GitHub client, the sleep and the monotonic clock. Returns 0 and
+    raises nothing: what it cannot read it leaves to `reviewbot run`.
     """
     if force:
         return 0
+    api = api or GitHub(repo, token)
     try:
-        head = _wait_for_listed_checks(api or GitHub(repo, token), pr_number, sleep, clock)
+        pull = api.pull_request(pr_number) or {}
+        base_ref = (pull.get("base") or {}).get("ref", "")
+        policy = config.load(api.file_at_ref(POLICY_PATH, base_ref or "HEAD"))
+        skip = _early_skip(api, pull, policy, pr_number, event or {})
+        if skip:
+            print(f"reviewbot wait: skipped, {scrub(skip)}")
+            _say_output("skip", "true")
+            return 0
+        head = _wait_for_listed_checks(api, pr_number, pull, policy, sleep, clock)
     except (config.PolicyError, GitHubError) as exc:
         print(f"reviewbot wait: {scrub(str(exc))}; the review decides without waiting")
         return 0
@@ -342,19 +356,32 @@ def wait_for_checks(
     return 0
 
 
-def _wait_for_listed_checks(api, pr_number: int, sleep, clock) -> str:
+def _early_skip(api, pull: dict, policy: dict, pr_number: int, event: dict) -> str | None:
+    """The reason `reviewbot run` will skip this pull request, read without
+    the diff and without CI, or None. `api` is the GitHub client, `pull` and
+    `policy` the pull request and the base-branch policy, `pr_number` the pull
+    request number and `event` the payload. A failed read is None: the run then
+    decides as before. Raises nothing.
+    """
+    try:
+        previous, since = review_thread(api.issue_comments(pr_number))
+        return policy_mod.early_skip(pull, policy, previous, since, automatic=is_automatic(event))
+    except Exception as exc:  # noqa: BLE001 - an early skip is only a saving
+        print(f"reviewbot wait: no early skip ({type(exc).__name__}); the review decides")
+        return None
+
+
+def _wait_for_listed_checks(api, pr_number: int, pull: dict, policy: dict, sleep, clock) -> str:
     """Poll the head commit's check runs until the listed checks and everything
     else have finished, CI is red, or the policy's seconds have passed.
 
-    `api` is the GitHub client, `pr_number` the pull request, and `sleep` and
+    `api` is the GitHub client, `pr_number` the pull request, `pull` and
+    `policy` the pull request and its base-branch policy, and `sleep` and
     `clock` the sleep and the monotonic clock. Returns the commit it polled, or
     "" when the policy asks for no wait or every changed file matches
-    `ignore_paths`; raises `config.PolicyError` for a malformed policy, and
-    `GitHubError` or the transport's own error for a failed read.
+    `ignore_paths`; raises `GitHubError` or the transport's own error for a
+    failed read.
     """
-    pull = api.pull_request(pr_number) or {}
-    base_ref = (pull.get("base") or {}).get("ref", "")
-    policy = config.load(api.file_at_ref(POLICY_PATH, base_ref or "HEAD"))
     listed = policy["wait_for_checks"]
     if not listed or not policy["require_ci_green"]:
         return ""
@@ -1121,6 +1148,11 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("REVIEWBOT_FORCE", "") == "true",
         help="do not wait: a forced review does not gate on CI",
     )
+    waiter.add_argument(
+        "--event",
+        default=os.environ.get("GITHUB_EVENT_PATH"),
+        help="path to the GitHub event payload; it says whether a push started the run",
+    )
 
     deriver = sub.add_parser(
         "derive-credential", help="write the derived copy the review jobs borrow"
@@ -1221,13 +1253,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.repo:
         parser.error("GITHUB_REPOSITORY is not set and --repo was not given")
 
-    if args.command == "wait-for-checks":
-        return wait_for_checks(repo=args.repo, token=token, pr_number=args.pr, force=args.force)
-
     event = {}
-    if args.event and os.path.exists(args.event):
+    if getattr(args, "event", None) and os.path.exists(args.event):
         with open(args.event) as handle:
             event = json.load(handle)
+
+    if args.command == "wait-for-checks":
+        return wait_for_checks(
+            repo=args.repo, token=token, pr_number=args.pr, force=args.force, event=event
+        )
 
     if args.command == "preflight":
         decision = preflight(event=event, repo=args.repo, token=token)

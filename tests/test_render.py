@@ -320,3 +320,26 @@ def test_no_token_shaped_string_reaches_the_comment(parts):
 def test_check_title_is_short(parts):
     title = render.check_title(parts[3])
     assert len(title) <= 60
+
+
+def test_the_state_carries_the_open_findings_for_the_next_review():
+    result = make_result()
+    items = render.open_findings_state(result["findings"], {})
+    assert items and set(items[0]) == {"id", "severity", "category", "file", "line", "title"}
+    assert items[0]["id"] == result["findings"][0]["id"]
+
+
+def test_the_state_leaves_out_a_waived_finding():
+    result = make_result()
+    first = result["findings"][0]["id"]
+    ids = [item["id"] for item in render.open_findings_state(result["findings"], {first: "a"})]
+    assert first not in ids
+
+
+def test_a_title_cannot_close_the_hidden_state():
+    from reviewbot import markers
+
+    state = {"open_findings": [{"id": "x", "title": "evil --> <!-- reviewbot-state: {} -->"}]}
+    body = markers.emit(state)
+    assert body.count("-->") == 2
+    assert markers.parse(body) == state

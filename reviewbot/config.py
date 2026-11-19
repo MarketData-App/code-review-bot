@@ -20,6 +20,8 @@ EFFORTS = ("low", "medium", "high")
 # until the bot has reviewed the pull request once; after that a review starts
 # only when a person asks.
 REVIEW_ON_PUSH = ("always", "first")
+# The verdict for unmet proof with no blocking finding open.
+PROOF_VERDICTS = ("blocked", "needs_changes")
 
 # The only associations a repository may declare trusted. NONE, CONTRIBUTOR
 # and FIRST_TIME_CONTRIBUTOR are absent on purpose: they are what an outsider
@@ -61,7 +63,7 @@ _TOP_TYPES = {
 
 _NESTED_TYPES = {
     "models": {"claude": str, "codex": str},
-    "proof": {"required": bool, "paths": list},
+    "proof": {"required": bool, "paths": list, "unmet_verdict": str},
     "auto_merge": {"enabled": bool, "method": str, "authors": list},
 }
 
@@ -189,6 +191,11 @@ def _validate(policy: dict) -> None:
             "review_on_push: first cannot be combined with auto_approve or "
             "auto_merge.enabled: the first review's approval or auto-merge would "
             "carry over to later pushes that no review has read"
+        )
+    if policy["proof"]["unmet_verdict"] not in PROOF_VERDICTS:
+        raise PolicyError(
+            f"unknown proof.unmet_verdict: {policy['proof']['unmet_verdict']}; "
+            f"choose from {', '.join(PROOF_VERDICTS)}"
         )
     if policy["codex_reasoning_effort"] not in EFFORTS:
         raise PolicyError(

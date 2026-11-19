@@ -154,9 +154,12 @@ Its comments carry four things that each cost a failed run:
   and the run reports success while doing nothing.
 - **Name every CI workflow** in `workflow_run.workflows`, by its `name:` and not
   its filename. The gate looks at every check on the commit, so whichever
-  finishes last is the one whose review proceeds. Earlier triggers skip cheaply,
-  or wait under `wait_for_checks` (section 4); a repeat on the same head skips
-  too. Extra triggers are self-deduplicating.
+  finishes last is the one whose review proceeds. The review job has one
+  concurrency group per pull request, so GitHub keeps one pending job for the
+  siblings, not one each. A sibling that reaches the runner after the review
+  of its head skips in the wait step, before the wait, the checkout and the
+  credential lease. On a single shared runner every sibling still costs a
+  queue slot, so name only the workflows you need.
 - **Only review pull requests.** `workflow_run` fires for default-branch pushes
   as well, because CI runs there too. Without
   `github.event.workflow_run.event == 'pull_request'`, every merge starts a job
@@ -233,7 +236,11 @@ real reviews: sdk-py #122 scored patch 6/6 with zero findings and was still
 reported Blocked, and all three would have been. If you do turn it on, pair it
 with `proof.paths` — and know that it is an ANY-match over the whole pull
 request, so one matching file gates every file. On sdk-py,
-`paths: ["src/marketdata/**"]` fires on 7 of 7 open pull requests.
+`paths: ["src/marketdata/**"]` fires on 7 of 7 open pull requests. To keep the
+ask and the `review: needs proof` label but not fail the check run, set
+`proof.unmet_verdict: needs_changes`. Then missing proof alone gives
+`needs_changes`, and a model verdict of `blocked` with no blocking finding, no
+open decision and green CI becomes `needs_changes` too.
 
 **The checks another app reports after CI.** Codecov, with its default
 `wait_for_ci`, reports only once every other check has finished, so its checks
